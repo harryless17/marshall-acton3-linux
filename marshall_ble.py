@@ -6,6 +6,14 @@ complete des registres et les pieges du firmware.
 
 Ce module ne connait rien de GTK.
 """
+import gi
+from gi.repository import Gio, GLib
+
+BLUEZ = "org.bluez"
+CHAR_IF = "org.bluez.GattCharacteristic1"
+DEV_IF = "org.bluez.Device1"
+PROP_IF = "org.freedesktop.DBus.Properties"
+OBJMGR_IF = "org.freedesktop.DBus.ObjectManager"
 
 BASS_MAX = 10
 TREBLE_MAX = 10
@@ -37,6 +45,100 @@ def match_preset(bass, treble):
         if p["bass"] == bass and p["treble"] == treble:
             return name
     return None
+
+
+class Speaker:
+    """Connexion au canal de controle BLE de l'enceinte.
+
+    Tous les appels passent par BlueZ en D-Bus, sur la boucle GLib.
+    """
+
+    BACKOFF = [1, 2, 5, 10, 30]
+
+    def __init__(self):
+        self._bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self._chars = {}
+        self._cache = {}
+        self._callback = None
+        self._subs = []
+        self._attempt = 0
+
+    # -- introspection ----------------------------------------------------
+    def _managed(self):
+        res = self._bus.call_sync(
+            BLUEZ, "/", OBJMGR_IF, "GetManagedObjects", None,
+            GLib.VariantType("(a{oa{sa{sv}}})"),
+            Gio.DBusCallFlags.NONE, 10000, None,
+        )
+        return res.unpack()[0]
+
+    def _scan_chars(self, objs=None):
+        objs = objs if objs is not None else self._managed()
+        self._chars = {
+            ifaces[CHAR_IF].get("UUID", "").lower(): path
+            for path, ifaces in objs.items() if CHAR_IF in ifaces
+        }
+        return self._chars
+
+    def _path(self, uuid):
+        return self._chars.get(uuid.lower())
+
+    # -- connexion --------------------------------------------------------
+    def connect(self, timeout_s=30):
+        """Resout l'enceinte par son SERVICE, jamais par une adresse figee.
+
+        L'adresse BLE de l'Acton III est privee et tournante : une adresse en
+        dur echoue systematiquement, et la connexion pend au lieu d'echouer.
+        """
+        if self._path(UUID_EQ):
+            return True
+
+        objs = self._managed()
+        self._scan_chars(objs)
+        if self._path(UUID_EQ):
+            return True
+
+        target = None
+        for path, ifaces in objs.items():
+            if DEV_IF not in ifaces:
+                continue
+            d = ifaces[DEV_IF]
+            name = d.get("Name") or ""
+            if "acton" in name.lower() and d.get("Paired"):
+                target = path
+                break
+        if not target:
+            return False
+
+        try:
+            self._bus.call_sync(BLUEZ, target, DEV_IF, "Connect", None, None,
+                                Gio.DBusCallFlags.NONE, timeout_s * 1000, None)
+        except GLib.Error:
+            return False
+
+        for _ in range(timeout_s * 2):
+            try:
+                p = self._bus.call_sync(
+                    BLUEZ, target, PROP_IF, "Get",
+                    GLib.Variant("(ss)", (DEV_IF, "ServicesResolved")),
+                    GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None)
+                if p.unpack()[0]:
+                    break
+            except GLib.Error:
+                pass
+            GLib.usleep(500000)
+
+        self._scan_chars()
+        return self._path(UUID_EQ) is not None
+
+    def is_connected(self):
+        return self._path(UUID_EQ) is not None
+
+    def close(self):
+        for sub in self._subs:
+            self._bus.signal_unsubscribe(sub)
+        self._subs = []
+        self._chars = {}
 
 
 def decode_eq(raw):

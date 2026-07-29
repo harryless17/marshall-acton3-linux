@@ -4,7 +4,9 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from marshall_ble import clamp, decode_eq, encode_eq, BASS_MAX, TREBLE_MAX
+from marshall_ble import (
+    clamp, decode_eq, encode_eq, match_preset, BASS_MAX, TREBLE_MAX, PRESETS,
+)
 
 
 class TestClamp(unittest.TestCase):
@@ -44,6 +46,30 @@ class TestEncodeEq(unittest.TestCase):
 
     def test_longueur_toujours_5(self):
         self.assertEqual(len(encode_eq(0, 0)), 5)
+
+
+class TestPresets(unittest.TestCase):
+    def test_les_quatre_presets_valides(self):
+        self.assertEqual(
+            {n: (p["bass"], p["treble"]) for n, p in PRESETS.items()},
+            {"Neutre": (5, 5), "Films": (8, 6),
+             "Musique": (10, 7), "Voix / podcast": (3, 8)},
+        )
+
+    def test_musique_correspond_aux_reglages_dorigine(self):
+        # l'utilisateur doit retrouver son son d'un clic
+        self.assertEqual(
+            (PRESETS["Musique"]["bass"], PRESETS["Musique"]["treble"]), (10, 7))
+
+    def test_match_exact(self):
+        self.assertEqual(match_preset(8, 6), "Films")
+
+    def test_aucun_match(self):
+        self.assertIsNone(match_preset(4, 4))
+
+    def test_un_preset_ne_definit_pas_de_volume(self):
+        for p in PRESETS.values():
+            self.assertNotIn("volume", p)
 
 
 if __name__ == "__main__":

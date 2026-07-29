@@ -17,8 +17,26 @@ UUID_MAXVOL = f"00000008-{_BASE}"
 UUID_EQ = f"0000000f-{_BASE}"
 
 
+# Presets bass/treble. Volontairement SANS volume : un preset ne doit jamais
+# changer le volume, qui reste sous le controle exclusif de l'utilisateur.
+PRESETS = {
+    "Neutre": {"bass": 5, "treble": 5},
+    "Films": {"bass": 8, "treble": 6},
+    "Musique": {"bass": 10, "treble": 7},
+    "Voix / podcast": {"bass": 3, "treble": 8},
+}
+
+
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
+
+def match_preset(bass, treble):
+    """Nom du preset correspondant exactement aux valeurs, sinon None."""
+    for name, p in PRESETS.items():
+        if p["bass"] == bass and p["treble"] == treble:
+            return name
+    return None
 
 
 def decode_eq(raw):

@@ -12,12 +12,21 @@ WriteValue part en type=request, un write-with-response que l'enceinte acquitte.
 """
 import os
 import sys
+import warnings
 
 import gi
 gi.require_version("Gtk", "3.0")
-gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import Gtk, Gio, GLib
-from gi.repository import AyatanaAppIndicator3 as AppIndicator
+
+# Gtk.StatusIcon est deprecie depuis GTK 3.14, mais c'est le seul mecanisme qui
+# fonctionne reellement ici. Verifie sur la machine cible (Ubuntu 24.04, GNOME
+# X11, extension ubuntu-appindicators active) :
+#   - AyatanaAppIndicator3 : ne s'enregistre pas aupres du StatusNotifierWatcher
+#   - AppIndicator3 (Canonical) : idem
+#   - Gtk.StatusIcon : icone visible, apparition/disparition verifiees
+# libappindicator cherche le service Unity, ne le trouve pas, et bascule sur
+# XEmbed sans jamais tenter le StatusNotifierWatcher de GNOME.
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 sys.path.insert(0, os.path.expanduser("~/.local/share/marshall"))
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -42,7 +51,11 @@ class SettingsWindow(Gtk.Window):
         self.set_default_size(380, 220)
         self.set_border_width(16)
         self.set_resizable(False)
-        self._loading = False        # True pendant une mise a jour programmee
+        # True des maintenant : la construction des sliders peut emettre
+        # "value-changed", ce qui declencherait des ecritures parasites vers
+        # l'enceinte avant meme d'avoir lu son etat. Remis a False en fin
+        # de __init__.
+        self._loading = True
 
         grid = Gtk.Grid(row_spacing=8, column_spacing=14)
         self.add(grid)
@@ -74,6 +87,7 @@ class SettingsWindow(Gtk.Window):
         grid.attach(self.status, 0, len(self.RANGES) + 1, 2, 1)
 
         self.connect("delete-event", self.on_close)
+        self._loading = False        # construction finie, les gestes comptent
 
     def on_close(self, *_a):
         self.hide()
@@ -81,6 +95,7 @@ class SettingsWindow(Gtk.Window):
 
     def update(self, state, connected):
         """Mise a jour programmee : ne doit PAS declencher d'ecriture."""
+        precedent = self._loading      # restaurer, pas forcer a False
         self._loading = True
         try:
             if state:
@@ -92,7 +107,7 @@ class SettingsWindow(Gtk.Window):
             for sc in self.scales.values():
                 sc.set_sensitive(bool(connected))
         finally:
-            self._loading = False
+            self._loading = precedent
 
     def on_scale(self, scale, key):
         if self._loading:
@@ -111,7 +126,7 @@ class Applet(Gtk.Application):
         self.spk = Speaker()
         self.state = None
         self.win = None
-        self.ind = None
+        self.icon = None
         self._menu = None
         self._pending = {}       # reglages en attente d'envoi (debounce)
         self._timer = None       # id du timeout de debounce en cours
@@ -119,19 +134,29 @@ class Applet(Gtk.Application):
 
     # -- cycle de vie -----------------------------------------------------
     def do_activate(self):
-        if self.ind is None:
+        if self.icon is None:
             self.hold()                      # pas de fenetre => ne pas quitter
-            self._build_indicator()
-            GLib.idle_add(self._initial_connect)
+            self._build_icon()
+            # Deferre de 1,5 s au lieu d'un idle_add : la connexion BLE est
+            # synchrone et bloque la boucle GLib jusqu'a 30 s. On laisse d'abord
+            # l'icone s'installer dans la barre, sinon l'applet parait mort.
+            GLib.timeout_add_seconds(2, self._initial_connect)
         else:
             self.on_settings(None)           # 2e lancement : montrer la fenetre
 
-    def _build_indicator(self):
-        self.ind = AppIndicator.Indicator.new(
-            APP_ID, ICON_OFF, AppIndicator.IndicatorCategory.HARDWARE)
-        self.ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-        self.ind.set_title("Marshall Acton III")
+    def _build_icon(self):
+        self.icon = Gtk.StatusIcon.new_from_icon_name(ICON_OFF)
+        self.icon.set_title("Marshall Acton III")
+        self.icon.set_tooltip_text("Marshall Acton III — connexion…")
+        self.icon.set_visible(True)
+        self.icon.connect("popup-menu", self._on_popup)
+        self.icon.connect("activate", self.on_settings)   # clic gauche
         self._rebuild_menu()
+
+    def _on_popup(self, icon, button, time):
+        if self._menu:
+            self._menu.popup(None, None, Gtk.StatusIcon.position_menu,
+                             icon, button, time)
 
     def _initial_connect(self):
         if self.spk.connect(timeout_s=30):
@@ -170,8 +195,15 @@ class Applet(Gtk.Application):
     def _do_refresh(self):
         self._refresh_timer = None
         connected = self._connected()
-        self.ind.set_icon_full(ICON_OK if connected else ICON_OFF,
-                               "Marshall Acton III")
+        self.icon.set_from_icon_name(ICON_OK if connected else ICON_OFF)
+        if connected:
+            s = self.state
+            self.icon.set_tooltip_text(
+                f"Marshall Acton III\n"
+                f"volume {s['volume']}/{s['max_volume']} · "
+                f"bass {s['bass']} · treble {s['treble']}")
+        else:
+            self.icon.set_tooltip_text("Marshall Acton III — déconnectée")
         self._rebuild_menu()
         if self.win:
             self.win.update(self.state, connected)
@@ -226,7 +258,6 @@ class Applet(Gtk.Application):
         m.append(quit_it)
 
         m.show_all()
-        self.ind.set_menu(m)
         self._menu = m           # garder une reference, sinon ramasse-miettes
 
     def on_preset(self, widget, name):

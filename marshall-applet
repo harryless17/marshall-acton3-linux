@@ -251,7 +251,10 @@ class SettingsWindow(Gtk.Window):
                         sc.set_value(state[key])
             self.status.set_label("● connectée" if connected
                                   else "○ déconnectée — reconnecter")
-            self.status.set_sensitive(not connected)
+            # Toujours sensible. Griser quand tout va bien affichait l'etat
+            # normal comme un controle desactive, ce qui se lit comme une
+            # panne. C'est le libelle qui porte l'etat ; le clic est simplement
+            # sans effet une fois connecte (cf. on_reconnect).
             # relu a chaque update : le fichier peut avoir bouge a la main
             self.autostart.set_active(autostart_enabled())
             for sc in self.scales.values():

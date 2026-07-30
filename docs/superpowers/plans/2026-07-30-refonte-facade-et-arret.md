@@ -710,7 +710,10 @@ Dans `SettingsWindow.update`, remplacer la ligne de statut :
 ```python
             self.status.set_label("● connectée" if connected
                                   else "○ déconnectée — reconnecter")
-            self.status.set_sensitive(not connected)
+            # Toujours sensible. Griser quand tout va bien affichait l'etat
+            # normal comme un controle desactive, ce qui se lit comme une
+            # panne. C'est le libelle qui porte l'etat ; le clic est simplement
+            # sans effet une fois connecte (cf. on_reconnect).
             # relu a chaque update : le fichier peut avoir bouge a la main
             self.autostart.set_active(autostart_enabled())
 ```
@@ -784,15 +787,15 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from marshall_ui import KnobModel, COURSE_VOLUME_PX, COURSE_EQ_PX
+from marshall_ui import KnobModel, TRAVEL_VOLUME_PX, TRAVEL_EQ_PX
 
 
 def volume(v=0):
-    return KnobModel(maximum=31, travel_px=COURSE_VOLUME_PX, value=v)
+    return KnobModel(maximum=31, travel_px=TRAVEL_VOLUME_PX, value=v)
 
 
 def bass(v=0):
-    return KnobModel(maximum=10, travel_px=COURSE_EQ_PX, value=v)
+    return KnobModel(maximum=10, travel_px=TRAVEL_EQ_PX, value=v)
 
 
 class TestBornes(unittest.TestCase):
@@ -840,13 +843,13 @@ class TestGlisseRelatif(unittest.TestCase):
     def test_toute_la_course_vers_le_haut_atteint_le_maximum(self):
         k = volume(0)
         k.begin_drag()
-        k.drag_to(COURSE_VOLUME_PX)
+        k.drag_to(TRAVEL_VOLUME_PX)
         self.assertEqual(k.value, 31)
 
     def test_toute_la_course_vers_le_bas_atteint_zero(self):
         k = volume(31)
         k.begin_drag()
-        k.drag_to(-COURSE_VOLUME_PX)
+        k.drag_to(-TRAVEL_VOLUME_PX)
         self.assertEqual(k.value, 0)
 
     def test_deux_glisses_partent_de_lorigine(self):
@@ -854,15 +857,15 @@ class TestGlisseRelatif(unittest.TestCase):
         La moitie de la course, deux fois, doit rester la moitie."""
         k = volume(0)
         k.begin_drag()
-        k.drag_to(COURSE_VOLUME_PX / 2)
+        k.drag_to(TRAVEL_VOLUME_PX / 2)
         milieu = k.value
-        k.drag_to(COURSE_VOLUME_PX / 2)
+        k.drag_to(TRAVEL_VOLUME_PX / 2)
         self.assertEqual(k.value, milieu)
 
     def test_un_nouveau_begin_drag_repart_de_la_valeur_courante(self):
         k = volume(0)
         k.begin_drag()
-        k.drag_to(COURSE_VOLUME_PX / 2)
+        k.drag_to(TRAVEL_VOLUME_PX / 2)
         atteint = k.value
         k.begin_drag()
         k.drag_to(0)
@@ -881,7 +884,7 @@ class TestCourseDifferenciee(unittest.TestCase):
     plus nerveux que l'EQ (11 crans) pour un meme geste."""
 
     def test_le_volume_a_une_course_plus_longue_que_leq(self):
-        self.assertGreater(COURSE_VOLUME_PX, COURSE_EQ_PX)
+        self.assertGreater(TRAVEL_VOLUME_PX, TRAVEL_EQ_PX)
 
     def test_un_meme_geste_bouge_moins_le_volume_en_proportion(self):
         v, b = volume(0), bass(0)
@@ -953,11 +956,11 @@ import math
 # Course de glisse, en pixels, pour parcourir toute la plage.
 # Distinctes a dessein : le volume a 32 crans et l'EQ 11. A course egale, le
 # volume serait environ trois fois plus nerveux pour un meme geste.
-COURSE_VOLUME_PX = 200      # ~6 px par cran
-COURSE_EQ_PX = 140          # ~13 px par cran
+TRAVEL_VOLUME_PX = 200      # ~6 px par cran
+TRAVEL_EQ_PX = 140          # 14 px par cran exactement
 
 
-def _arrondi(x):
+def _round_half_up(x):
     """Arrondi au plus proche, la moitie vers le haut.
 
     round() de Python arrondit vers le pair (round(0.5) == 0), ce qui
@@ -1017,7 +1020,7 @@ class KnobModel:
         L'axe y de GTK descend, donc l'appelant passe (y_depart - y_courant).
         """
         return self._poser(
-            self._origine + _arrondi(dy_haut_px * self.maximum / self.travel_px))
+            self._origine + _round_half_up(dy_haut_px * self.maximum / self.travel_px))
 
     def step(self, delta):
         return self._poser(self._value + delta)
@@ -1032,7 +1035,7 @@ class KnobModel:
 - [ ] **Step 4 : vérifier que les tests passent**
 
 Run : `python3 -m unittest tests.test_knob_model -v`
-Expected : PASS, 18 tests.
+Expected : PASS, 19 tests.
 
 - [ ] **Step 5 : commit**
 
@@ -1182,7 +1185,7 @@ ANGLE_MIN = math.radians(-140)
 ANGLE_MAX = math.radians(140)
 
 
-def _chemin_arrondi(cr, x, y, w, h, rayon):
+def _chemin_round_half_up(cr, x, y, w, h, rayon):
     """Rectangle a coins arrondis. Borne le rayon : sur une bande fine, un
     rayon trop grand produit des arcs qui se croisent."""
     r = max(0.0, min(rayon, w / 2, h / 2))
@@ -1233,7 +1236,7 @@ def paint_piping(cr, w, h, rayon=7):
     """Le lisere dore du pourtour. Un des rares vrais indices de profondeur :
     il n'y a aucun moteur 3D ici, tout est peint."""
     cr.save()
-    _chemin_arrondi(cr, 1.5, 1.5, w - 3, h - 3, rayon)
+    _chemin_round_half_up(cr, 1.5, 1.5, w - 3, h - 3, rayon)
     cr.set_source_rgba(*OR_LISERE, 0.55)
     cr.set_line_width(1.5)
     cr.stroke()
@@ -1244,7 +1247,7 @@ def paint_brass(cr, x, y, w, h, rayon=4):
     """La plaque de laiton qui porte les molettes : degrade chaud, brossage
     vertical, biseau clair en haut et sombre en bas."""
     cr.save()
-    _chemin_arrondi(cr, x, y, w, h, rayon)
+    _chemin_round_half_up(cr, x, y, w, h, rayon)
     cr.clip()
 
     g = cairo.LinearGradient(0, y, 0, y + h)
@@ -1281,7 +1284,7 @@ def paint_brass(cr, x, y, w, h, rayon=4):
 def paint_grille(cr, x, y, w, h, rayon=3):
     """La toile tissee, et l'ombre interne qui creuse le caisson."""
     cr.save()
-    _chemin_arrondi(cr, x, y, w, h, rayon)
+    _chemin_round_half_up(cr, x, y, w, h, rayon)
     cr.clip()
     cr.set_source_rgb(*TOILE)
     cr.paint()
@@ -1726,9 +1729,9 @@ MARGE = 12
 
 # Les trois registres pilotables, avec leur course de glisse. L'ordre est
 # celui du panneau de commandes de l'enceinte.
-REGISTRES = (("volume", COURSE_VOLUME_PX),
-             ("bass", COURSE_EQ_PX),
-             ("treble", COURSE_EQ_PX))
+REGISTRES = (("volume", TRAVEL_VOLUME_PX),
+             ("bass", TRAVEL_EQ_PX),
+             ("treble", TRAVEL_EQ_PX))
 
 
 class BrassPanel(Gtk.Box):
@@ -1900,7 +1903,8 @@ class Facade(Gtk.Box):
                     fn("marshall-preset-actif")
             self.etat.set_label("● connectée" if connected
                                 else "○ déconnectée — reconnecter")
-            self.etat.set_sensitive(not connected)
+            # Toujours sensible : griser l'etat normal le fait lire comme une
+            # panne. Le libelle porte l'etat, le clic est sans effet connecte.
             self.autostart.set_active(bool(autostart))
         finally:
             self._loading = precedent

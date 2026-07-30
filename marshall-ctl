@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""marshall-ctl -- volume, bass et treble d'une enceinte Marshall Acton III.
+
+    marshall-ctl                  # etat courant
+    marshall-ctl bass 6           # 0..10
+    marshall-ctl treble 8         # 0..10
+    marshall-ctl volume 20        # 0..31
+    marshall-ctl bass 6 treble 8  # plusieurs reglages d'un coup
+    marshall-ctl preset Musique   # applique un preset (bass/treble seulement)
+    marshall-ctl presets          # liste les presets
+
+L'identite BLE de l'enceinte doit avoir ete appairee une fois : voir --setup.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.expanduser("~/.local/share/marshall"))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from marshall_ble import PRESETS, Speaker, BASS_MAX, TREBLE_MAX, match_preset
+
+SETUP = """\
+Appairage de l'identite BLE de l'enceinte (une seule fois).
+
+L'enceinte expose deux identites Bluetooth : celle de l'audio (deja appairee,
+on n'y touche pas) et une identite BLE pour le controle, a appairer separement
+-- et avec un agent d'authentification, sinon BlueZ refuse.
+
+  1. Reperer l'adresse BLE (affichee comme "ACTON III [LE]") :
+
+       bluetoothctl --timeout 12 scan le | grep -i acton
+
+  2. Appairer, en gardant un scan actif pour que l'adresse reste valide
+     (l'adresse BLE est privee et tournante) :
+
+       { echo "agent on"; sleep 1; echo "default-agent"; sleep 1; \\
+         echo "scan on"; sleep 8; echo "pair XX:XX:XX:XX:XX:XX"; sleep 25; \\
+         echo "quit"; } | bluetoothctl
+
+     Attendre "Pairing successful".
+
+  3. Verifier :
+
+       marshall-ctl
+
+Pour revenir en arriere : bluetoothctl remove <adresse BLE>
+ATTENTION : ne JAMAIS faire "remove" sur l'adresse audio de l'enceinte,
+cela casserait l'appairage du son.
+"""
+
+
+def afficher(st):
+    preset = match_preset(st["bass"], st["treble"])
+    print(f"volume : {st['volume']}/{st['max_volume']}")
+    print(f"bass   : {st['bass']}/{BASS_MAX}")
+    print(f"treble : {st['treble']}/{TREBLE_MAX}")
+    if preset:
+        print(f"preset : {preset}")
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if argv and argv[0] == "--setup":
+        print(SETUP)
+        return 0
+    if argv and argv[0] == "presets":
+        for name, p in PRESETS.items():
+            print(f"{name:<16} bass {p['bass']:>2}  treble {p['treble']:>2}")
+        return 0
+
+    spk = Speaker()
+    if not spk.connect():
+        print("Enceinte introuvable. Allumee ? Identite BLE appairee "
+              "(marshall-ctl --setup) ?", file=sys.stderr)
+        return 1
+
+    if argv and argv[0] == "preset":
+        if len(argv) < 2:
+            print("Usage : marshall-ctl preset <nom>\nDisponibles : "
+                  + ", ".join(PRESETS), file=sys.stderr)
+            return 2
+        name = " ".join(argv[1:])
+        if name not in PRESETS:
+            print(f"Preset inconnu : {name}\nDisponibles : {', '.join(PRESETS)}",
+                  file=sys.stderr)
+            return 2
+        spk.set_bass(PRESETS[name]["bass"])
+        spk.set_treble(PRESETS[name]["treble"])
+    elif argv:
+        if len(argv) % 2 != 0:
+            print(f"Argument sans valeur : {argv[-1]}", file=sys.stderr)
+            return 2
+        for i in range(0, len(argv), 2):
+            key, raw = argv[i].lower(), argv[i + 1]
+            if key not in ("bass", "treble", "volume"):
+                print(f"Reglage inconnu : {key} "
+                      "(attendu bass, treble ou volume)", file=sys.stderr)
+                return 2
+            try:
+                val = int(raw)
+            except ValueError:
+                print(f"Valeur non numerique pour {key} : {raw}", file=sys.stderr)
+                return 2
+            if not getattr(spk, f"set_{key}")(val):
+                print(f"L'enceinte a refuse l'ecriture de {key}.", file=sys.stderr)
+                return 1
+
+    st = spk.get_state()
+    if not st:
+        print("Enceinte connectee mais muette. Reessayer.", file=sys.stderr)
+        return 1
+    afficher(st)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

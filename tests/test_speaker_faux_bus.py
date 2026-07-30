@@ -434,10 +434,18 @@ class TestWatchdog(unittest.TestCase):
         self.assertNotEqual(s._watchdog_source, premiere)
 
     def test_un_cycle_ne_replanifie_pas_apres_close(self):
+        """L'ancienne implementation appelait _tick_inner meme apres close() :
+        le cycle repartait, et pouvait rouvrir la connexion pendant qu'on la
+        fermait. Espionner _tick_inner est le seul moyen de le voir -- se fier
+        a la valeur de retour de _tick ne discrimine pas, tous les chemins
+        rendent False."""
         s = faire_speaker(bus_nominal())
         s.start_watchdog(lambda _st: None)
         s.close()
-        self.assertFalse(s._tick())          # ne doit pas replanifier
+        entres = []
+        s._tick_inner = lambda: entres.append(1) or False
+        self.assertFalse(s._tick())
+        self.assertEqual(entres, [], "le cycle est reparti apres close()")
         self.assertIsNone(s._watchdog_source)
 
     def test_stop_watchdog_preserve_le_chemin_du_device(self):

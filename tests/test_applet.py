@@ -68,6 +68,7 @@ class FauxSpeaker:
         self.abonnements = 0
         self.watchdogs = 0
         self.deconnexions = 0
+        self.ordre = []              # sequence des appels, pour l'arret
 
     def is_connected(self):
         return self.connecte
@@ -87,6 +88,9 @@ class FauxSpeaker:
 
     def start_watchdog(self, cb):
         self.watchdogs += 1
+
+    def stop_watchdog(self):
+        self.ordre.append("stop_watchdog")
 
     def set_eq(self, bass, treble):
         self.ecritures.append(("eq", (bass, treble)))
@@ -109,10 +113,11 @@ class FauxSpeaker:
         return True
 
     def disconnect(self):
+        self.ordre.append("disconnect")
         self.deconnexions += 1
 
     def close(self):
-        pass
+        self.ordre.append("close")
 
 
 class AppletTestCase(unittest.TestCase):
@@ -246,12 +251,20 @@ class TestAutostart(AppletTestCase):
         self.rep = tempfile.TemporaryDirectory()
         self.ancien = os.environ.get("XDG_CONFIG_HOME")
         os.environ["XDG_CONFIG_HOME"] = self.rep.name
+        # HOME est seulement memorise ici : un seul test le deplace, mais la
+        # restauration est inconditionnelle pour qu'un echec en cours de test
+        # ne laisse pas les suivants avec un faux HOME.
+        self.ancien_home = os.environ.get("HOME")
 
     def tearDown(self):
         if self.ancien is None:
             os.environ.pop("XDG_CONFIG_HOME", None)
         else:
             os.environ["XDG_CONFIG_HOME"] = self.ancien
+        if self.ancien_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self.ancien_home
         self.rep.cleanup()
 
     def test_desactive_par_defaut_quand_le_fichier_manque(self):
@@ -292,11 +305,132 @@ class TestAutostart(AppletTestCase):
         with open(self.mod.autostart_path()) as f:
             self.assertEqual(f.read(), premier)
 
+    def test_lexec_retombe_sur_le_script_sans_installation(self):
+        """Sans le lien de install.sh -- lancement direct depuis le depot --
+        Exec doit pointer sur le script reel, et pas sur un lien absent.
+
+        La branche de repli n'etait jamais parcourue : le lien existe sur la
+        machine de developpement, donc le premier terme gagnait toujours. On
+        deplace HOME sur un repertoire vide, ou ~/bin/marshall-applet ne peut
+        pas exister.
+        """
+        os.environ["HOME"] = self.rep.name
+        attendu = os.path.realpath(self.mod.__file__)
+        self.assertEqual(self.mod.applet_exec_path(), attendu)
+        # garde-fou : si le repli n'avait pas ete pris, on lirait le chemin du
+        # lien sous le HOME temporaire au lieu du script
+        self.assertFalse(
+            self.mod.applet_exec_path().startswith(self.rep.name),
+            "applet_exec_path a renvoye le lien absent au lieu du script")
+
     def test_le_chemin_suit_xdg_config_home(self):
         self.assertTrue(
             self.mod.autostart_path().startswith(self.rep.name),
             "autostart_path ignore XDG_CONFIG_HOME, donc le test polluerait "
             "le vrai ~/.config")
+
+
+class FausseIcone:
+    """Gtk.StatusIcon minimal : ne trace que ce qui compte pour l'arret."""
+
+    def __init__(self, journal):
+        self.journal = journal
+        self.visible = True
+
+    def set_visible(self, v):
+        self.visible = v
+        if not v:
+            self.journal.append("icone_masquee")
+
+    def set_from_icon_name(self, _n):
+        pass
+
+    def set_tooltip_text(self, _t):
+        pass
+
+
+class TestSequenceDarret(AppletTestCase):
+    """Le bug percu : jusqu'a ~3 s entre le clic sur Quitter et la disparition
+    de l'icone, parce que do_shutdown parlait a BlueZ d'abord."""
+
+    def setUp(self):
+        """Neutralise le chain-up de do_shutdown, cote test uniquement.
+
+        do_shutdown finit par Gtk.Application.do_shutdown(self), qui exige un
+        GObject reellement initialise -- or faire_applet passe par __new__ et
+        court-circuite Gtk.Application.__init__, donc l'appel leve
+        RuntimeError("not initialized"). Le retirer du code de production
+        supprimerait l'arret propre de GTK pour de vrai, donc on le remplace
+        ici, a la classe : ni l'instance ni le module ne sont touches, et
+        tearDown remet la methode d'origine.
+        """
+        self._chain_up = Gtk.Application.do_shutdown
+        Gtk.Application.do_shutdown = lambda _self: None
+
+    def tearDown(self):
+        Gtk.Application.do_shutdown = self._chain_up
+
+    def faire_applet_arretable(self):
+        spk = FauxSpeaker()
+        app = self.faire_applet(spk)
+        app.icon = FausseIcone(spk.ordre)
+        app._quits = 0
+
+        # quit() est JOURNALISE, pas seulement compte. C'est lui qui, en vrai,
+        # fait emettre "shutdown" par GTK et donc appeler do_shutdown : sans sa
+        # position dans la sequence, deplacer quit() avant le masquage de
+        # l'icone ne changeait rien au journal, puisque le test appelle
+        # do_shutdown a la main juste apres. Mutation verifiee : non detectee
+        # sans cette ligne, detectee avec.
+        def _quit():
+            app._quits += 1
+            spk.ordre.append("quit")
+
+        app.quit = _quit
+        return app, spk
+
+    def test_licone_est_masquee_avant_la_liberation_ble(self):
+        app, spk = self.faire_applet_arretable()
+        app.on_quit()
+        app.do_shutdown()
+        self.assertIn("icone_masquee", spk.ordre)
+        self.assertIn("disconnect", spk.ordre)
+        self.assertLess(spk.ordre.index("icone_masquee"),
+                        spk.ordre.index("disconnect"),
+                        "l'icone reste visible pendant que BlueZ repond")
+        self.assertLess(spk.ordre.index("icone_masquee"),
+                        spk.ordre.index("quit"),
+                        "quit() est ce qui declenche do_shutdown : masquer "
+                        "l'icone apres, c'est la masquer une fois BlueZ "
+                        "deja sollicite")
+
+    def test_le_watchdog_est_coupe_avant_le_demontage(self):
+        app, spk = self.faire_applet_arretable()
+        app.on_quit()
+        app.do_shutdown()
+        self.assertLess(spk.ordre.index("stop_watchdog"),
+                        spk.ordre.index("disconnect"),
+                        "un cycle de watchdog peut rouvrir la connexion "
+                        "pendant qu'on la ferme")
+
+    def test_on_quit_demande_bien_la_sortie_de_boucle(self):
+        app, _spk = self.faire_applet_arretable()
+        app.on_quit()
+        self.assertEqual(app._quits, 1)
+
+    def test_les_ecritures_en_attente_partent_quand_meme(self):
+        app, spk = self.faire_applet_arretable()
+        app._pending = {"volume": 25}
+        app.on_quit()
+        app.do_shutdown()
+        self.assertIn(("volume", 25), spk.ecritures)
+
+    def test_on_quit_sans_icone_ne_leve_pas(self):
+        """Quitter avant que do_activate ait construit l'icone."""
+        spk = FauxSpeaker()
+        app = self.faire_applet(spk)
+        app.quit = lambda: None
+        app.on_quit()                    # app.icon vaut None
 
 
 if __name__ == "__main__":

@@ -197,9 +197,25 @@ class SettingsWindow(Gtk.Window):
             box.add(b)
         grid.attach(box, 0, len(self.RANGES), 2, 1)
 
-        self.status = Gtk.Label(label="", xalign=0)
-        self.status.set_margin_top(8)
+        # La zone d'etat devient un BOUTON quand le lien est tombe : sur GNOME
+        # 46 le clic droit sur l'icone ne sort aucun menu, donc l'entree
+        # "Reconnecter" du menu est inatteignable -- enceinte eteinte signifiait
+        # applet muet jusqu'au relogin.
+        self.status = Gtk.Button(label="")
+        self.status.set_relief(Gtk.ReliefStyle.NONE)
+        self.status.connect("clicked", self.on_reconnect)
         grid.attach(self.status, 0, len(self.RANGES) + 1, 2, 1)
+
+        pied = Gtk.Box(spacing=8)
+        self.autostart = Gtk.Switch()
+        self.autostart.set_active(autostart_enabled())
+        self.autostart.connect("notify::active", self.on_autostart)
+        pied.add(self.autostart)
+        pied.add(Gtk.Label(label="Démarrer avec la session", xalign=0))
+        quitter = Gtk.Button(label="Quitter")
+        quitter.connect("clicked", lambda _w: self.app.on_quit())
+        pied.pack_end(quitter, False, False, 0)
+        grid.attach(pied, 0, len(self.RANGES) + 2, 2, 1)
 
         self.connect("delete-event", self.on_close)
         self._loading = False        # construction finie, les gestes comptent
@@ -233,8 +249,11 @@ class SettingsWindow(Gtk.Window):
                         continue
                     if key in state and sc.get_value() != state[key]:
                         sc.set_value(state[key])
-            self.status.set_text("● connectée" if connected
-                                 else "○ déconnectée")
+            self.status.set_label("● connectée" if connected
+                                  else "○ déconnectée — reconnecter")
+            self.status.set_sensitive(not connected)
+            # relu a chaque update : le fichier peut avoir bouge a la main
+            self.autostart.set_active(autostart_enabled())
             for sc in self.scales.values():
                 sc.set_sensitive(bool(connected))
         finally:
@@ -244,6 +263,22 @@ class SettingsWindow(Gtk.Window):
         if self._loading:
             return
         self.app.schedule_write(key, int(scale.get_value()))
+
+    def on_reconnect(self, _w):
+        """Ne fait rien quand le lien est deja la : le bouton n'est actif que
+        deconnecte, mais un double-clic rapide pourrait passer avant l'update.
+        """
+        if not self.app._connected():
+            GLib.idle_add(self.app._initial_connect)
+
+    def on_autostart(self, switch, _param):
+        """set_active() dans update() reemet "notify::active" : sans ce garde,
+        chaque rafraichissement reecrirait le fichier -- jusqu'a ~8 fois par
+        seconde quand la molette physique tourne.
+        """
+        if self._loading:
+            return
+        set_autostart(switch.get_active())
 
 
 class Applet(Gtk.Application):
@@ -315,13 +350,35 @@ class Applet(Gtk.Application):
         self._refresh()
         return False                         # ne pas replanifier l'idle
 
+    def on_quit(self, *_a):
+        """Arret demande par l'utilisateur.
+
+        L'interface part AVANT la liberation BLE. do_shutdown parle a BlueZ,
+        et meme borne a ~3 s c'est assez long pour qu'une icone toujours
+        visible se lise comme "ca ne quitte pas" -- symptome rapporte.
+
+        quit() ignore le compteur de hold() : le hold() pose par do_activate
+        n'empeche donc pas la sortie de boucle.
+        """
+        if self.icon is not None:
+            self.icon.set_visible(False)
+        if self.win is not None:
+            self.win.destroy()
+            self.win = None
+        self.quit()
+
     def do_shutdown(self):
         """Envoie ce qui attend, puis libere le canal BLE.
 
         Sans le Disconnect, BlueZ gardait le lien ouvert apres "Quitter" : le
         canal restait monopolise alors que l'utilisateur venait de fermer.
+
+        Le watchdog est coupe EN PREMIER : un cycle qui se declencherait ici
+        rouvrirait la connexion qu'on est en train de fermer. stop_watchdog()
+        et non close(), qui effacerait le _dev_path dont disconnect a besoin.
         """
         try:
+            self.spk.stop_watchdog()
             if self._pending:
                 pending, self._pending = dict(self._pending), {}
                 for key, value in pending.items():
@@ -425,7 +482,8 @@ class Applet(Gtk.Application):
 
         settings = Gtk.MenuItem(label="Réglages…")
         settings.connect("activate", self.on_settings)
-        settings.set_sensitive(connected)
+        # plus de set_sensitive(connected) : la fenetre porte maintenant
+        # Quitter et Reconnecter, qui servent justement quand c'est deconnecte.
         m.append(settings)
 
         if not connected:
@@ -435,7 +493,7 @@ class Applet(Gtk.Application):
             m.append(rec)
 
         quit_it = Gtk.MenuItem(label="Quitter")
-        quit_it.connect("activate", lambda _w: self.quit())
+        quit_it.connect("activate", self.on_quit)
         m.append(quit_it)
 
         m.show_all()

@@ -62,6 +62,7 @@ class Speaker:
         self._callback = None
         self._subs = []
         self._attempt = 0
+        self._dev_path = None    # device porteur du service de controle
 
     # -- introspection ----------------------------------------------------
     def _managed(self):
@@ -84,55 +85,93 @@ class Speaker:
         return self._chars.get(uuid.lower())
 
     # -- connexion --------------------------------------------------------
+    def _device_connected(self, path):
+        """Device1.Connected : la SEULE source de verite.
+
+        BlueZ garde les objets GATT en cache apres deconnexion -- verifie : 25
+        caracteristiques encore listees avec Connected=False. Se fier a leur
+        presence fait croire a une connexion active alors que rien ne repond.
+        """
+        if not path:
+            return False
+        try:
+            p = self._bus.call_sync(
+                BLUEZ, path, PROP_IF, "Get",
+                GLib.Variant("(ss)", (DEV_IF, "Connected")),
+                GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None)
+            return bool(p.unpack()[0])
+        except GLib.Error:
+            return False
+
     def connect(self, timeout_s=30):
         """Resout l'enceinte par son SERVICE, jamais par une adresse figee.
 
         L'adresse BLE de l'Acton III est privee et tournante : une adresse en
         dur echoue systematiquement, et la connexion pend au lieu d'echouer.
         """
-        if self._path(UUID_EQ):
+        if self.is_connected():
             return True
 
         objs = self._managed()
-        self._scan_chars(objs)
-        if self._path(UUID_EQ):
-            return True
 
-        target = None
+        # L'enceinte expose PLUSIEURS identites appairees, et une seule offre le
+        # service de controle :
+        #   ACTON III [LE]  -> identite BLE, expose fccd
+        #   ACTON III       -> identite audio BR/EDR, aucun service GATT
+        # Se connecter a la mauvaise "reussit" sans rien exposer. Il faut donc
+        # les essayer toutes, en commencant par les identites LE.
+        cands = []
         for path, ifaces in objs.items():
             if DEV_IF not in ifaces:
                 continue
             d = ifaces[DEV_IF]
             name = d.get("Name") or ""
-            if "acton" in name.lower() and d.get("Paired"):
-                target = path
-                break
-        if not target:
+            low = name.lower()
+            if ("acton" not in low and "marshall" not in low) or not d.get("Paired"):
+                continue
+            cands.append((0 if "[le]" in low else 1, path, name))
+        if not cands:
             return False
+        cands.sort(key=lambda c: c[0])
 
-        try:
-            self._bus.call_sync(BLUEZ, target, DEV_IF, "Connect", None, None,
-                                Gio.DBusCallFlags.NONE, timeout_s * 1000, None)
-        except GLib.Error:
-            return False
-
-        for _ in range(timeout_s * 2):
+        for _, path, _name in cands:
             try:
-                p = self._bus.call_sync(
-                    BLUEZ, target, PROP_IF, "Get",
-                    GLib.Variant("(ss)", (DEV_IF, "ServicesResolved")),
-                    GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None)
-                if p.unpack()[0]:
-                    break
+                self._bus.call_sync(BLUEZ, path, DEV_IF, "Connect", None, None,
+                                    Gio.DBusCallFlags.NONE, timeout_s * 1000, None)
             except GLib.Error:
-                pass
-            GLib.usleep(500000)
+                continue
 
-        self._scan_chars()
-        return self._path(UUID_EQ) is not None
+            for _ in range(timeout_s * 2):
+                try:
+                    p = self._bus.call_sync(
+                        BLUEZ, path, PROP_IF, "Get",
+                        GLib.Variant("(ss)", (DEV_IF, "ServicesResolved")),
+                        GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None)
+                    if p.unpack()[0]:
+                        break
+                except GLib.Error:
+                    pass
+                GLib.usleep(500000)
+
+            if not self._device_connected(path):
+                continue                     # Connect() a rendu sans connecter
+
+            self._scan_chars()
+            eq = self._path(UUID_EQ)
+            # la char doit appartenir A CE device : les chars d'un autre device
+            # peuvent trainer dans le cache de BlueZ.
+            if eq and eq.startswith(path + "/"):
+                self._dev_path = path
+                return True
+
+        return False
 
     def is_connected(self):
-        return self._path(UUID_EQ) is not None
+        """Connexion reellement active ET service de controle accessible."""
+        if not self._device_connected(self._dev_path):
+            return False
+        eq = self._path(UUID_EQ)
+        return bool(eq) and eq.startswith(self._dev_path + "/")
 
     def close(self):
         for sub in self._subs:
@@ -151,49 +190,59 @@ class Speaker:
         except GLib.Error:
             return None
 
-    def _read_via_notify(self, path, timeout_ms=9000):
-        """Le registre EQ ne repond pas a ReadValue -- l'appel pend -- mais il
-        pousse sa valeur des StartNotify. On s'abonne, on prend la premiere
-        valeur, on se desabonne.
+    def _char_prop(self, path, prop):
+        try:
+            return self._bus.call_sync(
+                BLUEZ, path, PROP_IF, "Get",
+                GLib.Variant("(ss)", (CHAR_IF, prop)),
+                GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None
+            ).unpack()[0]
+        except GLib.Error:
+            return None
 
-        ATTENTION : lance une GLib.MainLoop imbriquee. Ne jamais appeler depuis
-        un callback GTK d'interaction, sous peine de reentrance.
-        """
-        loop = GLib.MainLoop()
-        box = {}
-
-        def on_signal(_c, _s, _o, _i, _sig, params):
-            _iface, changed, _inv = params.unpack()
-            if "Value" in changed:
-                box["v"] = bytes(changed["Value"])
-                loop.quit()
-
-        sub = self._bus.signal_subscribe(
-            BLUEZ, PROP_IF, "PropertiesChanged", path, None,
-            Gio.DBusSignalFlags.NONE, on_signal)
+    def _start_notify(self, path):
         try:
             self._bus.call_sync(BLUEZ, path, CHAR_IF, "StartNotify", None, None,
                                 Gio.DBusCallFlags.NONE, 6000, None)
+            return True
         except GLib.Error:
-            self._bus.signal_unsubscribe(sub)
-            return None
+            return False
 
-        tid = GLib.timeout_add(timeout_ms, lambda: (loop.quit(), False)[1])
-        loop.run()
-        GLib.source_remove(tid)
-        self._bus.signal_unsubscribe(sub)
-        try:
-            self._bus.call_sync(BLUEZ, path, CHAR_IF, "StopNotify", None, None,
-                                Gio.DBusCallFlags.NONE, 4000, None)
-        except GLib.Error:
-            pass
-        return box.get("v")
+    def _read_cached(self, path, timeout_ms=8000):
+        """Lit la propriete Value, que BlueZ tient a jour tant que Notifying
+        est actif.
+
+        Remplace l'ancienne approche par GLib.MainLoop imbriquee : plus aucun
+        risque de reentrance depuis un callback GTK, et c'est immediat quand
+        l'abonnement est deja en place.
+
+        Deux subtilites verifiees sur le materiel :
+          - appeler StartNotify alors que Notifying est DEJA vrai ne pousse
+            aucune valeur (elle ne l'est qu'au premier abonnement) ; il faut
+            donc tester Notifying avant, et sinon lire Value directement ;
+          - sur une connexion fraiche, StartNotify peut echouer et Value rester
+            vide une seconde ou deux ; on retente jusqu'au timeout.
+        """
+        restant = timeout_ms
+        while restant > 0:
+            if self._char_prop(path, "Notifying"):
+                v = self._char_prop(path, "Value")
+                if v:
+                    return bytes(v)
+            else:
+                self._start_notify(path)
+            GLib.usleep(250000)
+            restant -= 250
+        return None
 
     def read_eq(self):
+        """Le registre EQ ne repond pas a ReadValue sur ce firmware -- l'appel
+        pend. On passe par la propriete Value alimentee par les notifications.
+        """
         p = self._path(UUID_EQ)
         if not p:
             return None
-        return self._read_direct(p) or self._read_via_notify(p)
+        return self._read_direct(p) or self._read_cached(p)
 
     def get_state(self):
         """Lecture synchrone complete.

@@ -55,6 +55,7 @@ class FauxBus:
         self.notifying = notifying or {}
         self.lever_sur = set(lever_sur)      # noms de methodes qui echouent
         self.appels = []                     # (methode, chemin)
+        self.delais = []                     # (methode, timeout_ms)
         self.ecritures = []                  # (chemin, bytes)
         self.connects = []                   # chemins sur lesquels Connect
 
@@ -64,8 +65,9 @@ class FauxBus:
             raise GLib.Error(f"faux echec sur {methode}")
 
     def call_sync(self, _dest, chemin, iface, methode, params,
-                  _rtype, _flags, _timeout, _cancellable):
+                  _rtype, _flags, timeout, _cancellable):
         self.appels.append((methode, chemin))
+        self.delais.append((methode, timeout))
         self._peut_lever(methode)
 
         if methode == "GetManagedObjects":
@@ -506,6 +508,25 @@ class TestFermeture(unittest.TestCase):
         s.disconnect()
         self.assertIn("Disconnect", [meth for meth, _ in bus.appels])
         self.assertFalse(bus.devices[DEV_LE]["Connected"])
+
+    def test_larret_est_borne_a_trois_secondes(self):
+        """Une icone qui reste 16 s dans la barre se lit comme "ca ne quitte
+        pas". Le cumul du pire cas doit tenir sous 3 s."""
+        bus = bus_nominal()
+        s = faire_speaker(bus)
+        s.connect(timeout_s=1)
+        bus.delais.clear()
+        s.disconnect()
+        pire = sum(t for meth, t in bus.delais
+                   if meth in ("StopNotify", "Disconnect"))
+        self.assertLessEqual(pire, 3000, f"pire cas d'arret : {pire} ms")
+
+    def test_disconnect_survit_a_un_bluez_muet(self):
+        bus = bus_nominal()
+        bus.lever_sur.update({"StopNotify", "Disconnect"})
+        s = faire_speaker(bus)
+        s.connect(timeout_s=1)
+        s.disconnect()          # ne doit pas propager
 
 
 if __name__ == "__main__":

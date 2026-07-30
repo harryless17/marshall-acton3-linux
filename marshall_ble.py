@@ -33,6 +33,12 @@ CACHED_READ_TIMEOUT_MS = 3000
 CONNECT_TIMEOUT_S = 20
 POLL_INTERVAL_S = 30        # sondage quand le lien est deja etabli
 
+# Delais du chemin d'ARRET, volontairement courts. Pendant tout ce temps,
+# l'utilisateur a deja clique "Quitter" ; il ne doit pas attendre BlueZ.
+# Pire cas cumule : 700 + 700 + 1500 = 2900 ms.
+STOP_NOTIFY_TIMEOUT_MS = 700
+STOP_DISCONNECT_TIMEOUT_MS = 1500
+
 
 def _plausible_eq(eq):
     """Ecarte les trames absurdes (0xff = "intouche", ou autre semantique).
@@ -591,13 +597,15 @@ class Speaker:
             if p:
                 try:
                     self._bus.call_sync(BLUEZ, p, CHAR_IF, "StopNotify", None, None,
-                                        Gio.DBusCallFlags.NONE, 4000, None)
+                                        Gio.DBusCallFlags.NONE,
+                                        STOP_NOTIFY_TIMEOUT_MS, None)
                 except GLib.Error:
                     pass
         if self._dev_path:
             try:
                 self._bus.call_sync(BLUEZ, self._dev_path, DEV_IF, "Disconnect",
-                                    None, None, Gio.DBusCallFlags.NONE, 8000, None)
+                                    None, None, Gio.DBusCallFlags.NONE,
+                                    STOP_DISCONNECT_TIMEOUT_MS, None)
             except GLib.Error:
                 pass
 

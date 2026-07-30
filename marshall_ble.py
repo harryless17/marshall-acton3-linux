@@ -277,6 +277,74 @@ class Speaker:
         self._cache["volume"] = value
         return True
 
+    # -- notifications ----------------------------------------------------
+    def subscribe(self, callback):
+        """Appelle callback(state) a chaque changement signale par l'enceinte.
+
+        Le callback est toujours invoque sur la boucle principale GLib, jamais
+        depuis un thread : l'appelant peut toucher l'UI directement.
+        """
+        self._callback = callback
+        for sub in self._subs:
+            self._bus.signal_unsubscribe(sub)
+        self._subs = []
+
+        for uuid in (UUID_EQ, UUID_VOLUME):
+            p = self._path(uuid)
+            if not p:
+                continue
+            self._subs.append(self._bus.signal_subscribe(
+                BLUEZ, PROP_IF, "PropertiesChanged", p, None,
+                Gio.DBusSignalFlags.NONE, self._on_prop_changed))
+            try:
+                self._bus.call_sync(BLUEZ, p, CHAR_IF, "StartNotify", None, None,
+                                    Gio.DBusCallFlags.NONE, 6000, None)
+            except GLib.Error:
+                pass
+
+    def _on_prop_changed(self, _c, _s, obj_path, _i, _sig, params):
+        _iface, changed, _inv = params.unpack()
+        if "Value" not in changed or not self._callback:
+            return
+        raw = bytes(changed["Value"])
+        if obj_path == self._path(UUID_EQ):
+            eq = decode_eq(raw)
+            if eq:
+                self._cache.update(bass=eq[0], treble=eq[1])
+        elif obj_path == self._path(UUID_VOLUME) and raw:
+            self._cache["volume"] = raw[0]
+        else:
+            return
+        self._cache.setdefault("max_volume", VOLUME_MAX_FALLBACK)
+        self._callback(dict(self._cache))
+
+    def start_watchdog(self, on_change):
+        """Reconnecte en tache de fond.
+
+        Le dernier palier (30 s) est conserve indefiniment : rallumer l'enceinte
+        doit suffire a la reprendre, sans rien relancer. Le cout est negligeable,
+        un appel D-Bus local toutes les 30 s.
+        """
+        self._attempt = 0
+
+        def tick():
+            if self.is_connected():
+                self._attempt = 0
+                return True                    # replanifie au meme intervalle
+
+            if self.connect(timeout_s=20):
+                self._attempt = 0
+                if self._callback:
+                    self.subscribe(self._callback)   # re-abonner apres coupure
+                on_change(self.get_state())
+                return True
+
+            self._attempt = min(self._attempt + 1, len(self.BACKOFF) - 1)
+            GLib.timeout_add_seconds(self.BACKOFF[self._attempt], tick)
+            return False                       # celui-ci s'arrete, le nouveau prend
+
+        GLib.timeout_add_seconds(self.BACKOFF[0], tick)
+
 
 def decode_eq(raw):
     """(bass, treble) depuis la trame 5 octets, ou None si inexploitable."""

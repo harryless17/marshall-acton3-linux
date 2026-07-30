@@ -56,5 +56,41 @@ class TestLecture(SpeakerTestCase):
         self.assertIsNotNone(decode_eq(raw))
 
 
+class TestEcriture(SpeakerTestCase):
+    def setUp(self):
+        self.origine = self.spk.get_state()
+        self.assertIsNotNone(self.origine)
+
+    def tearDown(self):
+        # restauration systematique : on ne laisse jamais les reglages modifies
+        self.spk.set_bass(self.origine["bass"])
+        self.spk.set_treble(self.origine["treble"])
+        self.spk.set_volume(self.origine["volume"])
+
+    def test_set_bass_applique_et_relu(self):
+        cible = 2 if self.origine["bass"] > 5 else 9
+        self.assertTrue(self.spk.set_bass(cible))
+        self.assertEqual(self.spk.get_state()["bass"], cible)
+
+    def test_set_bass_preserve_le_treble(self):
+        t0 = self.origine["treble"]
+        self.spk.set_bass(2 if self.origine["bass"] > 5 else 9)
+        self.assertEqual(self.spk.get_state()["treble"], t0)
+
+    def test_set_treble_preserve_le_bass(self):
+        b0 = self.origine["bass"]
+        self.spk.set_treble(2 if self.origine["treble"] > 5 else 9)
+        self.assertEqual(self.spk.get_state()["bass"], b0)
+
+    def test_volume(self):
+        cible = 6 if self.origine["volume"] > 10 else 15
+        self.assertTrue(self.spk.set_volume(cible))
+        self.assertEqual(self.spk.get_state()["volume"], cible)
+
+    def test_valeur_hors_bornes_est_bornee(self):
+        self.spk.set_bass(99)
+        self.assertEqual(self.spk.get_state()["bass"], 10)
+
+
 if __name__ == "__main__":
     unittest.main()

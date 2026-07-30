@@ -219,6 +219,64 @@ class Speaker:
         self._cache.update(state)     # base des mises a jour partielles
         return state
 
+    # -- ecriture ---------------------------------------------------------
+    def _write(self, path, payload):
+        """WriteValue avec type=request, repli sur command.
+
+        type=request est un write-with-response : un retour sans erreur signifie
+        que l'enceinte a acquitte la valeur au niveau ATT. C'est ce qui autorise
+        l'appelant a considerer la valeur comme appliquee sans relire.
+
+        A noter : bluetoothctl rend NotSupported sur un payload multi-octets,
+        l'appel D-Bus direct fonctionne.
+        """
+        for kind in ("request", "command"):
+            try:
+                self._bus.call_sync(
+                    BLUEZ, path, CHAR_IF, "WriteValue",
+                    GLib.Variant("(aya{sv})",
+                                 (bytes(payload), {"type": GLib.Variant("s", kind)})),
+                    None, Gio.DBusCallFlags.NONE, 8000, None)
+                return True
+            except GLib.Error:
+                continue
+        return False
+
+    def _set_eq_band(self, band, value):
+        """Read-modify-write : ne jamais ecraser l'autre bande."""
+        cur = decode_eq(self.read_eq())
+        if cur is None:
+            return False
+        bass, treble = cur
+        if band == "bass":
+            bass = value
+        else:
+            treble = value
+        p = self._path(UUID_EQ)
+        if not p or not self._write(p, encode_eq(bass, treble)):
+            return False
+        self._cache.update(bass=clamp(bass, 0, BASS_MAX),
+                           treble=clamp(treble, 0, TREBLE_MAX))
+        return True
+
+    def set_bass(self, v):
+        return self._set_eq_band("bass", v)
+
+    def set_treble(self, v):
+        return self._set_eq_band("treble", v)
+
+    def set_volume(self, v):
+        p, pm = self._path(UUID_VOLUME), self._path(UUID_MAXVOL)
+        if not p:
+            return False
+        m = self._read_direct(pm) if pm else None
+        top = m[0] if m else VOLUME_MAX_FALLBACK
+        value = clamp(v, 0, top)
+        if not self._write(p, [value]):
+            return False
+        self._cache["volume"] = value
+        return True
+
 
 def decode_eq(raw):
     """(bass, treble) depuis la trame 5 octets, ou None si inexploitable."""

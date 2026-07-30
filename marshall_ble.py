@@ -140,6 +140,85 @@ class Speaker:
         self._subs = []
         self._chars = {}
 
+    # -- lecture ----------------------------------------------------------
+    def _read_direct(self, path, timeout=4000):
+        try:
+            res = self._bus.call_sync(
+                BLUEZ, path, CHAR_IF, "ReadValue",
+                GLib.Variant("(a{sv})", ({},)), GLib.VariantType("(ay)"),
+                Gio.DBusCallFlags.NONE, timeout, None)
+            return bytes(res.unpack()[0])
+        except GLib.Error:
+            return None
+
+    def _read_via_notify(self, path, timeout_ms=9000):
+        """Le registre EQ ne repond pas a ReadValue -- l'appel pend -- mais il
+        pousse sa valeur des StartNotify. On s'abonne, on prend la premiere
+        valeur, on se desabonne.
+
+        ATTENTION : lance une GLib.MainLoop imbriquee. Ne jamais appeler depuis
+        un callback GTK d'interaction, sous peine de reentrance.
+        """
+        loop = GLib.MainLoop()
+        box = {}
+
+        def on_signal(_c, _s, _o, _i, _sig, params):
+            _iface, changed, _inv = params.unpack()
+            if "Value" in changed:
+                box["v"] = bytes(changed["Value"])
+                loop.quit()
+
+        sub = self._bus.signal_subscribe(
+            BLUEZ, PROP_IF, "PropertiesChanged", path, None,
+            Gio.DBusSignalFlags.NONE, on_signal)
+        try:
+            self._bus.call_sync(BLUEZ, path, CHAR_IF, "StartNotify", None, None,
+                                Gio.DBusCallFlags.NONE, 6000, None)
+        except GLib.Error:
+            self._bus.signal_unsubscribe(sub)
+            return None
+
+        tid = GLib.timeout_add(timeout_ms, lambda: (loop.quit(), False)[1])
+        loop.run()
+        GLib.source_remove(tid)
+        self._bus.signal_unsubscribe(sub)
+        try:
+            self._bus.call_sync(BLUEZ, path, CHAR_IF, "StopNotify", None, None,
+                                Gio.DBusCallFlags.NONE, 4000, None)
+        except GLib.Error:
+            pass
+        return box.get("v")
+
+    def read_eq(self):
+        p = self._path(UUID_EQ)
+        if not p:
+            return None
+        return self._read_direct(p) or self._read_via_notify(p)
+
+    def get_state(self):
+        """Lecture synchrone complete.
+
+        ATTENTION : peut lancer une GLib.MainLoop imbriquee (via read_eq).
+        Reserve au CLI, a l'initialisation et au watchdog -- jamais depuis un
+        callback GTK d'interaction.
+        """
+        if not self.is_connected():
+            return None
+        eq = decode_eq(self.read_eq())
+        if eq is None:
+            return None
+        pv, pm = self._path(UUID_VOLUME), self._path(UUID_MAXVOL)
+        v = self._read_direct(pv) if pv else None
+        m = self._read_direct(pm) if pm else None
+        state = {
+            "volume": v[0] if v else 0,
+            "max_volume": m[0] if m else VOLUME_MAX_FALLBACK,
+            "bass": eq[0],
+            "treble": eq[1],
+        }
+        self._cache.update(state)     # base des mises a jour partielles
+        return state
+
 
 def decode_eq(raw):
     """(bass, treble) depuis la trame 5 octets, ou None si inexploitable."""

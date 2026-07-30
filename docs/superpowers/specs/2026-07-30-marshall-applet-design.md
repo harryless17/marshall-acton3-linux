@@ -219,9 +219,38 @@ vers `~/bin`, pour qu'un `git pull` suffise à mettre à jour.
 ### Icône
 
 Icônes du thème système, pour rester cohérent avec GNOME et éviter d'embarquer
-des assets : `audio-speakers` (connectée), `audio-speakers-symbolic` en état
-atténué pour « connexion », `audio-volume-muted` (déconnectée). À confirmer à
-l'implémentation selon leur rendu réel dans la barre.
+des assets : `audio-speakers` (connectée) et `audio-volume-muted` (déconnectée
+ou connexion en cours). Vérifiées présentes dans le thème Yaru-purple.
+
+### Mécanisme d'icône : Gtk.StatusIcon, pas AppIndicator
+
+**Corrigé à l'implémentation.** Le design initial prévoyait
+`AyatanaAppIndicator3`. Mesuré sur la machine cible (Ubuntu 24.04, GNOME X11,
+extension `ubuntu-appindicators` active) :
+
+| Approche | Résultat |
+|---|---|
+| `AyatanaAppIndicator3` 0.1 | ne s'enregistre pas auprès du `StatusNotifierWatcher` |
+| `AppIndicator3` 0.1 (Canonical) | idem |
+| **`Gtk.StatusIcon`** | **fonctionne** — apparition/disparition vérifiées par capture d'écran |
+
+`libappindicator` cherche le service Unity, ne le trouve pas, et bascule sur
+XEmbed sans jamais tenter le `StatusNotifierWatcher` de GNOME. Son
+`is_embedded()` renvoie d'ailleurs `False` alors que l'icône s'affiche
+correctement — l'API dépréciée est trompeuse sur ce point.
+
+`Gtk.StatusIcon` est déprécié depuis GTK 3.14 ; les avertissements sont filtrés
+explicitement. Conséquence favorable : son menu est un **vrai `Gtk.Menu` local**
+et non du DBusMenu, donc la contrainte « pas de sliders dans un menu de barre »
+tombe. Non exploité pour l'instant — la fenêtre de réglages reste le lieu du
+réglage fin, comme validé.
+
+### Démarrage non bloquant
+
+`Speaker.connect()` est synchrone et peut bloquer la boucle GLib jusqu'à 30 s.
+La connexion initiale est donc différée de 2 s après la création de l'icône,
+pour que celle-ci s'installe dans la barre d'abord — sinon l'applet paraît mort
+au lancement.
 
 ## Gestion d'erreurs
 

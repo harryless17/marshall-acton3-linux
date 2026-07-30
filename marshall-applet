@@ -51,9 +51,21 @@ DEBOUNCE_MS = 150       # attente avant d'envoyer un reglage de slider
 REFRESH_MS = 120        # regroupement des rafraichissements d'UI
 
 
+_LOG_TAG = "marshall-applet"
+
+
 def _setup_log():
     """Journal sur fichier : lance par l'autostart, l'applet n'a aucune sortie.
-    Sans ca, un plantage est indistinguable d'un arret normal."""
+    Sans ca, un plantage est indistinguable d'un arret normal.
+
+    Idempotent : un rechargement du module ne doit pas empiler un second
+    handler, sinon chaque message serait ecrit plusieurs fois.
+    """
+    root = logging.getLogger()
+    for existant in root.handlers:
+        if getattr(existant, "_marshall_tag", None) == _LOG_TAG:
+            return logging.getLogger("marshall")
+
     d = os.path.join(os.environ.get("XDG_STATE_HOME",
                                     os.path.expanduser("~/.local/state")), "marshall")
     try:
@@ -62,8 +74,8 @@ def _setup_log():
             os.path.join(d, "applet.log"), maxBytes=256_000, backupCount=1)
     except OSError:
         h = logging.StreamHandler(sys.stderr)
+    h._marshall_tag = _LOG_TAG
     h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    root = logging.getLogger()
     root.addHandler(h)
     root.setLevel(logging.INFO)
     # Une exception non rattrapee doit laisser une trace, pas disparaitre.

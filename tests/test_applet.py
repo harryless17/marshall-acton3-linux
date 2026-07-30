@@ -7,9 +7,9 @@ Couvre en priorite les bugs trouves par la revue, pour qu'ils ne reviennent pas 
   - un preset ne touche jamais au volume
 """
 import importlib.util
+import logging
 import os
 import sys
-import types
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -20,9 +20,29 @@ from gi.repository import Gtk  # noqa: E402
 
 RACINE = os.path.join(os.path.dirname(__file__), "..")
 
+_MODULE = None
+
 
 def charger_applet():
-    """Charge le script marshall-applet (sans extension .py) comme module."""
+    """Charge le script marshall-applet (sans extension .py) comme module.
+
+    Charge UNE SEULE FOIS : le module installe un handler de log au chargement,
+    et le recharger par classe de test faisait ecrire chaque message autant de
+    fois qu'il y avait de classes.
+
+    Le journal est redirige vers un handler nul : les tests ne doivent pas
+    polluer ~/.local/state/marshall/applet.log, qui sert au diagnostic reel.
+    """
+    global _MODULE
+    if _MODULE is not None:
+        return _MODULE
+
+    # journal neutralise AVANT le chargement, qui appelle _setup_log()
+    racine_log = logging.getLogger()
+    nul = logging.NullHandler()
+    nul._marshall_tag = "marshall-applet"      # fait passer _setup_log pour fait
+    racine_log.addHandler(nul)
+
     chemin = os.path.join(RACINE, "marshall-applet")
     spec = importlib.util.spec_from_loader(
         "applet_sous_test", loader=None, origin=chemin)
@@ -32,6 +52,8 @@ def charger_applet():
         code = compile(f.read(), chemin, "exec")
     sys.modules["applet_sous_test"] = mod
     exec(code, mod.__dict__)
+    logging.getLogger("marshall").propagate = False   # silence total
+    _MODULE = mod
     return mod
 
 

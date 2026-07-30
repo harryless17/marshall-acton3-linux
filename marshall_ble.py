@@ -256,9 +256,9 @@ class Speaker:
         """Lit la propriete Value, que BlueZ tient a jour tant que Notifying
         est actif.
 
-        Remplace l'ancienne approche par GLib.MainLoop imbriquee : plus aucun
-        risque de reentrance depuis un callback GTK, et c'est immediat quand
-        l'abonnement est deja en place.
+        Immediat quand l'abonnement est deja en place. Ne sert que de repli :
+        mesure sur ce firmware, lien etabli, ReadValue sur l'EQ repond en ~90 ms,
+        donc _read_direct suffit la plupart du temps.
 
         Deux subtilites verifiees sur le materiel :
           - appeler StartNotify alors que Notifying est DEJA vrai ne pousse

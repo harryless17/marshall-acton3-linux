@@ -64,8 +64,9 @@ pas tel quel sous Linux sur ce firmware :
 
 ## Environnement cible
 
-Ubuntu 24.04.2 LTS, GNOME sur X11. GTK3 et `AyatanaAppIndicator3 0.1`
-disponibles, extension `ubuntu-appindicators@ubuntu.com` déjà active.
+Ubuntu 24.04.2 LTS, GNOME sur X11. GTK3 disponible, extension
+`ubuntu-appindicators@ubuntu.com` active — elle est nécessaire, car c'est elle
+qui héberge les icônes de notification héritées (voir « Mécanisme d'icône »).
 
 **Gio.DBus (PyGObject) a été validé expérimentalement** contre BlueZ :
 lecture du volume, lecture de l'EQ via `StartNotify`, écriture et restauration,
@@ -80,7 +81,7 @@ d'événements.
 | Interaction | Hybride : icône permanente + menu, et une fenêtre de réglages à sliders |
 | Connexion BLE | **Maintenue en permanence** tant que l'applet tourne, reconnexion automatique silencieuse |
 | App mobile | Non prise en compte — l'utilisateur ne s'en sert pas |
-| Presets | 4, fixes : Neutre 5/5 · Films 8/6 · Musique 10/7 · Voix-YouTube 3/8 |
+| Presets | 4, fixes : Neutre 5/5 · Films 8/6 · Musique 10/7 · Voix / podcast 3/8 |
 | Autostart | Oui, via `~/.config/autostart/` |
 | Backend D-Bus | Gio/GLib, module partagé entre applet et CLI |
 
@@ -95,7 +96,7 @@ volume=12**. Le preset « Musique » les reprend exactement.
 ```
 ~/Bureau/marshall-applet/          (dépôt git, source)
 ├── marshall_ble.py                module protocole (Gio)
-├── marshall-applet                applet GTK3 + AppIndicator
+├── marshall-applet                applet GTK3 (Gtk.StatusIcon)
 ├── marshall-ctl                   CLI
 ├── install.sh                     liens vers ~/bin + autostart
 └── docs/superpowers/specs/
@@ -128,7 +129,10 @@ GLib**, jamais depuis un thread : l'UI peut donc y toucher directement sans
 Points internes :
 - découverte par `GetManagedObjects` en cherchant la caractéristique EQ ;
   si absente, recherche d'un `Device1` appairé nommé « Acton » puis `Connect()`
-- `read()` tente `ReadValue`, avec repli sur `StartNotify` (contournement du `0x0f`)
+- `read_eq()` tente `ReadValue`, avec repli sur la lecture de la propriété
+  D-Bus `Value` que BlueZ tient à jour tant que `Notifying` est actif. Le repli
+  ne sert plus guère : lien établi, `ReadValue` sur `0x0f` répond en ~90 ms.
+  Il reste utile quand un process précédent a laissé `Notifying` ouvert.
 - `set_bass`/`set_treble` font un read-modify-write pour ne pas écraser l'autre bande
 - `WriteValue` avec `type=request`, repli `command`
 - abonnement permanent aux `PropertiesChanged` de `0x07` et `0x0f`
@@ -138,8 +142,10 @@ Testable en CLI, sans GUI.
 
 ### `marshall-applet` — UI
 
-Icône `AyatanaAppIndicator3` avec trois états visuels : connectée, connexion en
-cours, déconnectée.
+Icône `Gtk.StatusIcon` avec **deux** états visuels : `audio-speakers` quand
+l'enceinte est connectée et son état lisible, `audio-volume-muted` sinon — ce
+second état couvre donc aussi bien « connexion en cours » que « déconnectée ».
+Le détail est porté par l'infobulle, qui affiche les valeurs courantes.
 
 Menu :
 
@@ -176,14 +182,20 @@ Fenêtre de réglages (une seule instance, réutilisée) :
 
 ### Flux
 
-**Démarrage.** Icône en état « connexion », UI immédiatement affichée et
-réactive. La connexion se fait sans bloquer la boucle GLib. Une fois établie,
-lecture de l'état et abonnement aux notifications.
+**Démarrage.** L'icône apparaît d'abord en état « connexion », puis la connexion
+est tentée 2 s plus tard. Cet appel est **synchrone : l'interface est gelée
+pendant sa durée** (mesuré 1,4 s en temps normal, jusqu'à quelques dizaines de
+secondes si l'enceinte ne répond pas). Ce n'est pas de la réentrance —
+`call_sync` ne fait pas tourner la boucle GLib — mais un blocage franc, et c'est
+la vraie raison pour laquelle aucun appel BLE ne doit partir d'un handler GTK.
+Le décalage de 2 s sert seulement à ce que l'icône soit installée dans la barre
+avant le gel. Une fois le lien établi : lecture de l'état, puis abonnement aux
+notifications.
 
-**Slider déplacé.** Envoi **debounce 150 ms** après le dernier mouvement. Sans
-cela, un glissement produit des dizaines d'événements sur un canal à 1–2 s par
-commande : le lien sature et l'affichage se désynchronise de la réalité. Le
-délai est imperceptible à l'usage.
+**Slider déplacé.** Envoi **debounce 150 ms** après le dernier mouvement. La
+raison est le volume d'événements, pas la lenteur du lien : un glissement en
+produit des dizaines, et il ne doit partir qu'une écriture. Latences réellement
+mesurées, lien établi : `ReadValue` et `WriteValue` ≈ **90 ms** chacun.
 
 **Clic sur un preset.** Envoi immédiat, sans debounce. Un preset ne touche que
 le **bass et le treble** — jamais le volume, qui reste sous le contrôle exclusif
@@ -268,7 +280,8 @@ au lancement.
 | Endormie après 10 min d'inactivité | Reconnexion transparente à la prochaine action |
 | Écriture refusée | L'affichage revient à la valeur réelle plutôt que de mentir |
 | Identité BLE non appairée | Message clair renvoyant vers la procédure d'appairage |
-| Appel D-Bus lent | Timeouts courts, jamais de blocage de l'UI |
+| Appel D-Bus lent | Timeouts bornés (écriture 4 s, lecture 2 s, connexion 20 s). L'UI **est** gelée pendant un appel : la protection n'est pas l'absence de blocage mais sa borne, plus le refus immédiat des écritures quand `is_connected()` est faux |
+| Erreur inattendue dans le watchdog | Rattrapée et journalisée, et le cycle est replanifié. Une exception qui s'échappe fait retirer la source par PyGObject, ce qui tuait la reconnexion pour toute la session |
 
 Principe : l'UI ne montre jamais une valeur qu'elle n'a pas vue confirmée par
 l'enceinte.
@@ -301,7 +314,9 @@ l'enceinte.
 
 ## Limites assumées
 
-- Latence 1–2 s par commande, inhérente au canal BLE.
+- Latence par commande, **mesurée** lien établi : ~90 ms en lecture comme en
+  écriture. (Les « 1–2 s » d'une première estimation venaient de mesures faites
+  à froid via `bluetoothctl`, connexion comprise.)
 - Première connexion ~11 s.
 - Le canal BLE n'accepte qu'un client : l'application mobile Marshall ne pourra
   pas se connecter pendant que l'applet tourne. Accepté explicitement.

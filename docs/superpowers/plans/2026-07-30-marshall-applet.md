@@ -1,3 +1,25 @@
+> ## ⚠️ DOCUMENT HISTORIQUE — PÉRIMÉ
+>
+> Ce plan décrit l'intention *avant* implémentation. Plusieurs de ses prémisses
+> se sont révélées fausses à l'exécution, et son code de référence ne correspond
+> plus à ce qui tourne. En particulier :
+>
+> - le mécanisme d'icône est **`Gtk.StatusIcon`**, pas `AyatanaAppIndicator3` ;
+> - la lecture de l'EQ ne passe plus par une `GLib.MainLoop` imbriquée ;
+> - `is_connected()` s'appuie sur `Device1.Connected`, pas sur la présence des
+>   caractéristiques (que BlueZ garde en cache après déconnexion) ;
+> - `connect()` essaie **toutes** les identités appairées, identités `[LE]`
+>   d'abord ;
+> - les latences réelles sont ~90 ms, pas 1–2 s.
+>
+> **Pour l'état réel du projet : lire le README, la spec, puis le code.**
+>
+> **Verdict de la Task 0** (qui était bloquante) : l'enceinte notifie bien les
+> changements faits sur ses molettes physiques — 70 notifications observées, et
+> cran par cran, jusqu'à ~20 par seconde sur le volume. Le reflet en direct est
+> donc réalisable et implémenté. C'est cette mesure qui a imposé le regroupement
+> des rafraîchissements d'UI, absent de ce plan.
+
 # Applet Marshall Acton III — plan d'implémentation
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

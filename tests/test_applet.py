@@ -260,15 +260,16 @@ class TestAutostart(AppletTestCase):
     def test_activer_cree_le_fichier(self):
         self.mod.set_autostart(True)
         self.assertTrue(self.mod.autostart_enabled())
-        contenu = open(self.mod.autostart_path()).read()
+        with open(self.mod.autostart_path()) as f:
+            contenu = f.read()
         self.assertIn("[Desktop Entry]", contenu)
         self.assertIn("Type=Application", contenu)
         self.assertIn("Exec=", contenu)
 
     def test_lexec_pointe_sur_un_chemin_absolu(self):
         self.mod.set_autostart(True)
-        ligne = [l for l in open(self.mod.autostart_path())
-                 if l.startswith("Exec=")][0]
+        with open(self.mod.autostart_path()) as f:
+            ligne = [l for l in f if l.startswith("Exec=")][0]
         chemin = ligne.split("=", 1)[1].strip()
         self.assertTrue(chemin.startswith("/"), f"Exec relatif : {chemin}")
         self.assertTrue(chemin.endswith("marshall-applet"))
@@ -285,9 +286,11 @@ class TestAutostart(AppletTestCase):
 
     def test_activer_deux_fois_est_idempotent(self):
         self.mod.set_autostart(True)
-        premier = open(self.mod.autostart_path()).read()
+        with open(self.mod.autostart_path()) as f:
+            premier = f.read()
         self.mod.set_autostart(True)
-        self.assertEqual(open(self.mod.autostart_path()).read(), premier)
+        with open(self.mod.autostart_path()) as f:
+            self.assertEqual(f.read(), premier)
 
     def test_le_chemin_suit_xdg_config_home(self):
         self.assertTrue(

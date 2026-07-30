@@ -3,6 +3,15 @@
 Date : 2026-07-30
 État : validé par l'utilisateur, prêt pour le plan d'implémentation
 
+> ⚠️ **L'interface décrite ici a été remplacée.** La fenêtre à sliders et le
+> menu de l'icône ont cédé la place à une façade d'amplificateur dessinée en
+> Cairo, avec des molettes rotatives — et à toutes les commandes dans la
+> fenêtre, parce que sur GNOME 46 le clic droit sur l'icône ne sort aucun menu.
+> Voir [`2026-07-30-refonte-facade-et-arret-design.md`](2026-07-30-refonte-facade-et-arret-design.md).
+>
+> Le protocole BLE et les pièges du firmware, eux, restent exacts : c'est
+> toujours ce document qui en fait référence.
+
 ## Objectif
 
 Régler le volume, le bass et le treble d'une enceinte Marshall Acton III depuis

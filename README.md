@@ -220,6 +220,8 @@ regarder si l'icône n'apparaît pas ou si l'interface semble figée.
 | « Enceinte introuvable » au CLI | Idem, ou l'applet monopolise le canal |
 | L'icône a disparu après un déplacement du dossier | Rejouer `./install.sh` |
 | L'interface se figue quelques secondes | Attendu : les appels BLE sont synchrones |
+| **Le clic droit sur l'icône ne fait rien** | **Attendu sur GNOME 46 : l'extension ne rend pas le menu. Tout est dans la fenêtre — clic *gauche* sur l'icône** |
+| L'applet revient à chaque ouverture de session | L'interrupteur **« Démarrer avec la session »** est allumé. L'éteindre dans la fenêtre |
 
 L'enceinte s'endort après ~10 min d'inactivité ; l'applet la reprend
 automatiquement (sondage toutes les 30 s, backoff en cas d'échec).
@@ -232,6 +234,10 @@ rm -f ~/.local/share/applications/marshall-applet.desktop
 rm -f ~/.config/autostart/marshall-applet.desktop
 rm -rf ~/.local/share/marshall ~/.local/state/marshall
 ```
+
+> Pour seulement empêcher le démarrage automatique, sans désinstaller : éteins
+> l'interrupteur **« Démarrer avec la session »** dans la fenêtre. Il retire
+> exactement le même fichier que la troisième ligne ci-dessus.
 
 Pour retirer aussi l'appairage BLE — **uniquement l'adresse `[LE]`** :
 

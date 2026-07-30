@@ -81,9 +81,25 @@ class KnobModel:
         """dy_up_px POSITIF = geste vers le haut = valeur qui monte.
 
         L'axe y de GTK descend, donc l'appelant passe (y_depart - y_courant).
+
+        RE-ANCRAGE A LA SATURATION : sans lui, tirer au-dela d'une butee mettait
+        le depassement en reserve, et il fallait le rendre en entier avant que la
+        valeur ne reparte -- 130 px mesures a la souris, qui sous la main se
+        lisent comme une molette bloquee. On redefinit donc l'origine pour que le
+        deplacement courant retombe pile sur la butee atteinte : le demi-tour
+        repart alors au cran suivant.
+
+        La calibration n'y touche pas : le pas reste maximum / travel_px par
+        pixel, et hors saturation _origin n'est jamais reecrit, donc les courses
+        pleines (197 px au volume, 133 px a l'EQ) sont inchangees.
         """
-        return self._set(
-            self._origin + _round_half_up(dy_up_px * self.maximum / self.travel_px))
+        pas = _round_half_up(dy_up_px * self.maximum / self.travel_px)
+        brut = self._origin + pas
+        changed = self._set(brut)
+        if brut != self._value:
+            # brut a ete rogne : on etait dehors, donc on recale l'ancre
+            self._origin = self._value - pas
+        return changed
 
     def step(self, delta):
         return self._set(self._value + delta)

@@ -100,6 +100,91 @@ class TestGlisseRelatif(unittest.TestCase):
         self.assertEqual(k.value, 12)
 
 
+class TestReAncrageALaSaturation(unittest.TestCase):
+    """Tirer au-dela d'une butee ne doit pas mettre le depassement en reserve.
+
+    Sans re-ancrage, 100 px pousses au-dela du maximum devaient etre rendus en
+    entier avant que la valeur ne redescende : 130 px mesures a la souris, et
+    sous la main ca se lit comme une molette bloquee. C'est exactement le defaut
+    qui ferait rejeter les molettes rotatives.
+    """
+
+    def test_demi_tour_immediat_apres_depassement_en_haut(self):
+        k = volume(31)
+        k.begin_drag()
+        k.drag_to(100)                     # 100 px pousses au-dela de la butee
+        self.assertEqual(k.value, 31, "la butee doit tenir")
+        self.assertTrue(k.drag_to(90),
+                        "10 px de demi-tour et la valeur ne bouge pas : le "
+                        "depassement a ete capitalise")
+        self.assertLess(k.value, 31)
+
+    def test_demi_tour_immediat_apres_depassement_en_bas(self):
+        k = volume(0)
+        k.begin_drag()
+        k.drag_to(-100)
+        self.assertEqual(k.value, 0)
+        self.assertTrue(k.drag_to(-90))
+        self.assertGreater(k.value, 0)
+
+    def test_le_depassement_nest_pas_capitalise_meme_enorme(self):
+        """Pousser trois fois plus loin ne doit pas rendre le demi-tour trois
+        fois plus long : chaque deplacement sature recale l'ancre."""
+        loin, tres_loin = volume(31), volume(31)
+        for k, pousse in ((loin, 100), (tres_loin, 600)):
+            k.begin_drag()
+            k.drag_to(pousse)
+            k.drag_to(pousse - 10)
+            # sans cette assertion le test serait creux : les deux resteraient
+            # coinces a 31 et l'egalite tiendrait toute seule
+            self.assertLess(k.value, 31,
+                            f"pousse a {pousse} px, le demi-tour de 10 px n'a "
+                            f"rien rendu")
+        self.assertEqual(loin.value, tres_loin.value)
+
+    def test_le_demi_tour_coute_au_plus_un_cran(self):
+        """Le re-ancrage pose l'ancre pile sur la butee, donc le premier cran
+        rendu ne peut pas demander plus d'un cran de geste."""
+        for fabrique, maxi, course in ((volume, 31, TRAVEL_VOLUME_PX),
+                                       (bass, 10, TRAVEL_EQ_PX)):
+            k = fabrique(maxi)
+            k.begin_drag()
+            k.drag_to(100)
+            px_par_cran = course / maxi
+            recul = 0
+            while k.value == maxi and recul <= px_par_cran + 1:
+                recul += 1
+                k.drag_to(100 - recul)
+            self.assertLess(k.value, maxi,
+                            f"apres {recul} px de demi-tour la valeur n'a "
+                            f"toujours pas bouge (un cran vaut "
+                            f"{px_par_cran:.1f} px)")
+
+    def test_hors_saturation_la_calibration_est_intacte(self):
+        """Le re-ancrage ne doit se voir QUE contre une butee : dans la plage,
+        l'ancre posee par begin_drag reste la seule reference."""
+        k = volume(0)
+        k.begin_drag()
+        k.drag_to(TRAVEL_VOLUME_PX / 2)
+        milieu = k.value
+        k.drag_to(TRAVEL_VOLUME_PX / 2)    # meme deplacement, meme valeur
+        self.assertEqual(k.value, milieu)
+        k.drag_to(0)                       # retour a l'attache : retour a zero
+        self.assertEqual(k.value, 0)
+
+    def test_la_course_pleine_reste_la_course_annoncee(self):
+        """La promesse faite a l'utilisateur : toute la plage pour toute la
+        course, ni plus ni moins."""
+        k = volume(0)
+        k.begin_drag()
+        self.assertTrue(k.drag_to(TRAVEL_VOLUME_PX))
+        self.assertEqual(k.value, 31)
+        b = bass(0)
+        b.begin_drag()
+        self.assertTrue(b.drag_to(TRAVEL_EQ_PX))
+        self.assertEqual(b.value, 10)
+
+
 class TestCourseDifferenciee(unittest.TestCase):
     """Sans courses distinctes, le volume (32 crans) serait environ trois fois
     plus nerveux que l'EQ (11 crans) pour un meme geste."""

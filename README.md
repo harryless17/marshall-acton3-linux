@@ -1,8 +1,20 @@
 # marshall-acton3-linux
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux%20%2F%20X11-lightgrey.svg)]()
+[![No PyPI deps](https://img.shields.io/badge/dependencies-PyGObject%20only-green.svg)]()
+
 Control your **Marshall Acton III** speaker from Linux — volume, bass and treble
 — without reaching for the physical knobs and without the Marshall mobile app
 (which has no Linux version).
+
+<p align="center">
+  <img src="docs/images/settings.png" alt="Fenêtre de réglages : sliders volume, bass, treble et les quatre presets" width="600">
+</p>
+<p align="center">
+  <img src="docs/images/tray.png" alt="L'icône dans la barre système GNOME" width="600">
+</p>
 
 <details>
 <summary><b>English — quick start</b></summary>
@@ -278,6 +290,20 @@ n'écrit que dans les registres de volume et d'égalisation, mais il est fourni
 Ne retirez jamais l'appairage de l'identité **audio** de l'enceinte : seule
 l'identité `[LE]` concerne cet outil.
 
+## Auteur
+
+**Aghiles Manseur** — [@harryless17](https://github.com/harryless17)
+
+Le protocole a été établi par observation du trafic BLE de l'enceinte, en partant
+du travail de [`anpct/marshall-acton3-ble`](https://github.com/anpct/marshall-acton3-ble),
+puis corrigé et complété : identités Bluetooth multiples, cache GATT de BlueZ,
+lecture de l'égaliseur par la propriété `Value`, et bonding LE avec agent
+d'authentification. Ces découvertes sont consignées dans
+[`docs/`](docs/superpowers/specs/2026-07-30-marshall-applet-design.md) pour que
+quiconque veuille porter le protocole sur un autre modèle n'ait pas à les refaire.
+
 ## Licence
 
 [MIT](LICENSE) — faites-en ce que vous voulez, en conservant l'avis de copyright.
+
+Copyright © 2026 Aghiles Manseur.

@@ -19,6 +19,15 @@
 3. **Convention d'écriture du dépôt** : commentaires et docstrings en français **sans accents** (voir n'importe quel fichier `.py`) ; documentation Markdown **avec** accents. Noms de tests en français.
 4. **@superpowers:test-driven-development** — le test échoue d'abord, toujours.
 5. **@superpowers:verification-before-completion** — aucune affirmation de succès sans la sortie de commande sous les yeux.
+6. **Pour tout correctif de correction, muter avant de conclure.** Leçon payée sur la tâche 1 : les quatre tests étaient rouges avant le correctif, ce qui semblait suffire — mais ils l'étaient parce qu'un attribut n'existait pas encore, pas parce qu'un timer fuyait. Une fois l'attribut posé, on pouvait vider entièrement le corps de `stop_watchdog()` en laissant le vrai timer armé, et **les quatre tests restaient verts**. « Rouge avant, vert après » ne prouve pas qu'on garde le bon comportement. La seule preuve est de casser volontairement le correctif et de vérifier qu'un test tombe :
+
+   ```bash
+   # 1. neutraliser le coeur du correctif dans le code
+   # 2. lancer la suite -- un test DOIT echouer, et il doit etre celui qu'on croit
+   # 3. restaurer, relancer, tout doit repasser
+   ```
+
+   À faire pour les tâches **1, 2, 4** (correctifs de comportement). Inutile pour les tâches 5 à 11, qui ajoutent du code neuf plutôt que d'en corriger.
 
 ### Commandes de test
 
@@ -157,12 +166,14 @@ Remplacer `start_watchdog` / `_tick` / `_tick_inner` par :
             return
         self._watchdog_on = True
         self._attempt = 0
-        self._replanifier(self.BACKOFF[0])
+        self._reschedule(self.BACKOFF[0])
 
-    def _replanifier(self, delai_s):
+    def _reschedule(self, delay_s):
         """Un seul endroit ou une source est creee, pour que _watchdog_source
         soit toujours l'id du timer reellement en attente."""
-        self._watchdog_source = GLib.timeout_add_seconds(delai_s, self._tick)
+        if not self._watchdog_on:
+            return          # coupe pendant le cycle : ne pas ressusciter la chaine
+        self._watchdog_source = GLib.timeout_add_seconds(delay_s, self._tick)
 
     def stop_watchdog(self):
         """Coupe la chaine de timers, et rien d'autre.
@@ -173,10 +184,7 @@ Remplacer `start_watchdog` / `_tick` / `_tick_inner` par :
         """
         self._watchdog_on = False
         if self._watchdog_source is not None:
-            try:
-                GLib.source_remove(self._watchdog_source)
-            except (ValueError, GLib.Error):
-                pass                 # deja terminee : rien a retirer
+            GLib.source_remove(self._watchdog_source)
             self._watchdog_source = None
 
     def _tick(self):
@@ -184,8 +192,12 @@ Remplacer `start_watchdog` / `_tick` / `_tick_inner` par :
         PyGObject retire la source quand un callback leve, ce qui tuait la
         reconnexion pour le reste de la session -- et sans trace, la sortie
         d'erreur allant dans le vide."""
-        # la source qui nous appelle s'acheve en rendant False : on l'oublie
-        # avant tout, sinon stop_watchdog tenterait de retirer un id mort.
+        # La source qui nous appelle s'acheve en rendant False : on l'oublie
+        # avant tout. Sinon stop_watchdog retirerait un id mort -- et GLib
+        # RECYCLE les ids, donc ce retrait pourrait tuer en silence une source
+        # sans rapport. C'est ici que se joue la protection, pas dans un
+        # try/except autour de source_remove : source_remove ne leve pas, il
+        # rend False en avertissant.
         self._watchdog_source = None
         if not self._watchdog_on:
             return False             # coupe pendant l'attente : on s'arrete la
@@ -193,17 +205,17 @@ Remplacer `start_watchdog` / `_tick` / `_tick_inner` par :
             return self._tick_inner()
         except Exception:
             log.exception("watchdog: cycle en echec, on replanifie")
-            self._replanifier(POLL_INTERVAL_S)
+            self._reschedule(POLL_INTERVAL_S)
             return False
 ```
 
-Dans `_tick_inner`, remplacer les trois `GLib.timeout_add_seconds(..., self._tick)` par `self._replanifier(...)` :
+Dans `_tick_inner`, remplacer les trois `GLib.timeout_add_seconds(..., self._tick)` par `self._reschedule(...)` :
 
 ```python
-            self._replanifier(POLL_INTERVAL_S)      # les deux premiers cas
+            self._reschedule(POLL_INTERVAL_S)      # les deux premiers cas
             ...
         self._attempt = min(self._attempt + 1, len(self.BACKOFF) - 1)
-        self._replanifier(self.BACKOFF[self._attempt])
+        self._reschedule(self.BACKOFF[self._attempt])
         return False
 ```
 

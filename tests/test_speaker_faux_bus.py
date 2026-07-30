@@ -136,18 +136,15 @@ class FauxBus:
 
 
 def faire_speaker(bus):
-    """Speaker sans toucher au vrai bus systeme."""
+    """Speaker sans toucher au vrai bus systeme.
+
+    Passe par le vrai __init__ (Gio.bus_get_sync mocke) plutot que de
+    mirrorer ses champs a la main : un mirroir se desynchronise en silence
+    des que __init__ gagne un champ -- c'est precisement ce qui s'est produit
+    ici avec _watchdog_source, et qui a change le comportement des tests."""
     s = m.Speaker.__new__(m.Speaker)
-    s._bus = bus
-    s._chars = {}
-    s._cache = {}
-    s._callback = None
-    s._subs = []
-    s._attempt = 0
-    s._dev_path = None
-    s._callback_change = None
-    s._watchdog_on = False
-    s._watchdog_source = None
+    with mock.patch.object(m.Gio, "bus_get_sync", return_value=bus):
+        s.__init__()
     return s
 
 

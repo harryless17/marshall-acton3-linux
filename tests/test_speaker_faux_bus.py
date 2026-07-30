@@ -146,6 +146,7 @@ def faire_speaker(bus):
     s._dev_path = None
     s._callback_change = None
     s._watchdog_on = False
+    s._watchdog_source = None
     return s
 
 
@@ -411,6 +412,43 @@ class TestWatchdog(unittest.TestCase):
         s._tick_inner()
         self.assertTrue(recus, "l'impasse 'lien up, etat inconnu' persiste")
         self.assertEqual(set(recus[0]), {"volume", "max_volume", "bass", "treble"})
+
+    def test_close_retire_la_source_du_watchdog(self):
+        s = faire_speaker(bus_nominal())
+        s.start_watchdog(lambda _st: None)
+        self.assertIsNotNone(s._watchdog_source)
+        s.close()
+        self.assertIsNone(s._watchdog_source)
+        self.assertFalse(s._watchdog_on)
+
+    def test_close_puis_start_ne_cree_quune_chaine(self):
+        """Le drapeau _watchdog_on etait inerte : close() le remettait a False
+        sans retirer le timer, donc un start_watchdog() suivant empilait une
+        seconde chaine -- exactement ce que l'idempotence evitait."""
+        s = faire_speaker(bus_nominal())
+        s.start_watchdog(lambda _st: None)
+        premiere = s._watchdog_source
+        s.close()
+        s.start_watchdog(lambda _st: None)
+        self.assertIsNotNone(s._watchdog_source)
+        self.assertNotEqual(s._watchdog_source, premiere)
+
+    def test_un_cycle_ne_replanifie_pas_apres_close(self):
+        s = faire_speaker(bus_nominal())
+        s.start_watchdog(lambda _st: None)
+        s.close()
+        self.assertFalse(s._tick())          # ne doit pas replanifier
+        self.assertIsNone(s._watchdog_source)
+
+    def test_stop_watchdog_preserve_le_chemin_du_device(self):
+        """disconnect() a encore besoin de _dev_path : couper le watchdog ne
+        doit donc PAS faire le menage de close()."""
+        s = faire_speaker(bus_nominal())
+        s.connect(timeout_s=1)
+        s.start_watchdog(lambda _st: None)
+        s.stop_watchdog()
+        self.assertFalse(s._watchdog_on)
+        self.assertIsNotNone(s._dev_path)
 
 
 class TestFermeture(unittest.TestCase):

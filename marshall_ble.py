@@ -89,6 +89,7 @@ class Speaker:
         self._dev_path = None       # device porteur du service de controle
         self._callback_change = None
         self._watchdog_on = False   # une seule chaine de timers, cf. start_watchdog
+        self._watchdog_source = None   # id du timer en cours, cf. stop_watchdog
 
     # -- introspection ----------------------------------------------------
     def _managed(self):
@@ -221,7 +222,7 @@ class Speaker:
         self._chars = {}
         self._cache = {}
         self._dev_path = None
-        self._watchdog_on = False
+        self.stop_watchdog()
 
     # -- lecture ----------------------------------------------------------
     def _read_direct(self, path, timeout=READ_TIMEOUT_MS):
@@ -501,18 +502,43 @@ class Speaker:
             return
         self._watchdog_on = True
         self._attempt = 0
-        GLib.timeout_add_seconds(self.BACKOFF[0], self._tick)
+        self._replanifier(self.BACKOFF[0])
+
+    def _replanifier(self, delai_s):
+        """Un seul endroit ou une source est creee, pour que _watchdog_source
+        soit toujours l'id du timer reellement en attente."""
+        self._watchdog_source = GLib.timeout_add_seconds(delai_s, self._tick)
+
+    def stop_watchdog(self):
+        """Coupe la chaine de timers, et rien d'autre.
+
+        Separe de close() parce que la sequence d'arret a besoin de couper le
+        watchdog AVANT d'appeler disconnect(), qui lui a encore besoin de
+        _dev_path -- que close() effacerait.
+        """
+        self._watchdog_on = False
+        if self._watchdog_source is not None:
+            try:
+                GLib.source_remove(self._watchdog_source)
+            except (ValueError, GLib.Error):
+                pass                 # deja terminee : rien a retirer
+            self._watchdog_source = None
 
     def _tick(self):
         """Un cycle de surveillance. Ne doit JAMAIS laisser filer d'exception :
         PyGObject retire la source quand un callback leve, ce qui tuait la
         reconnexion pour le reste de la session -- et sans trace, la sortie
         d'erreur allant dans le vide."""
+        # la source qui nous appelle s'acheve en rendant False : on l'oublie
+        # avant tout, sinon stop_watchdog tenterait de retirer un id mort.
+        self._watchdog_source = None
+        if not self._watchdog_on:
+            return False             # coupe pendant l'attente : on s'arrete la
         try:
             return self._tick_inner()
         except Exception:
             log.exception("watchdog: cycle en echec, on replanifie")
-            GLib.timeout_add_seconds(POLL_INTERVAL_S, self._tick)
+            self._replanifier(POLL_INTERVAL_S)
             return False
 
     def _tick_inner(self):
@@ -525,18 +551,18 @@ class Speaker:
                 if st:
                     self._resubscribe()
                     self._notify(st)
-            GLib.timeout_add_seconds(POLL_INTERVAL_S, self._tick)
+            self._replanifier(POLL_INTERVAL_S)
             return False
 
         if self.connect(timeout_s=CONNECT_TIMEOUT_S):
             self._attempt = 0
             self._resubscribe()          # rebranche meme si subscribe() n'avait
             self._notify(self.get_state())   # jamais reussi avant
-            GLib.timeout_add_seconds(POLL_INTERVAL_S, self._tick)
+            self._replanifier(POLL_INTERVAL_S)
             return False
 
         self._attempt = min(self._attempt + 1, len(self.BACKOFF) - 1)
-        GLib.timeout_add_seconds(self.BACKOFF[self._attempt], self._tick)
+        self._replanifier(self.BACKOFF[self._attempt])
         return False
 
     def _notify(self, state):

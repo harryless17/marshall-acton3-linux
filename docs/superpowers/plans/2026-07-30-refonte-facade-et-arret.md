@@ -1161,6 +1161,7 @@ Ajouter en tête de `marshall_ui.py`, après `import math` :
 import cairo
 import gi
 gi.require_version("Gtk", "3.0")
+gi.require_version("Pango", "1.0")        # sinon PyGIWarning a l'import
 gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gtk, Gdk, GLib, GObject, Pango, PangoCairo   # noqa: E402
 ```

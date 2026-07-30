@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -416,10 +417,27 @@ class TestWatchdog(unittest.TestCase):
     def test_close_retire_la_source_du_watchdog(self):
         s = faire_speaker(bus_nominal())
         s.start_watchdog(lambda _st: None)
+        self.addCleanup(s.stop_watchdog)
         self.assertIsNotNone(s._watchdog_source)
         s.close()
         self.assertIsNone(s._watchdog_source)
         self.assertFalse(s._watchdog_on)
+
+    def test_stop_watchdog_retire_reellement_la_source(self):
+        """Un mutant qui reduit stop_watchdog a la seule remise a None de
+        _watchdog_source laisse passer les quatre autres tests du groupe :
+        ils n'observent que ce champ de comptabilite, jamais si GLib a
+        vraiment ete prevenu -- soit exactement la fuite que cette tache
+        corrige. On espionne GLib.source_remove pour epingler l'appel
+        lui-meme, pas seulement son effet suppose sur le champ."""
+        s = faire_speaker(bus_nominal())
+        s.start_watchdog(lambda _st: None)
+        self.addCleanup(s.stop_watchdog)
+        arme = s._watchdog_source
+        with mock.patch.object(m.GLib, "source_remove",
+                               wraps=m.GLib.source_remove) as retire:
+            s.close()
+        retire.assert_called_once_with(arme)
 
     def test_close_puis_start_ne_cree_quune_chaine(self):
         """Le drapeau _watchdog_on etait inerte : close() le remettait a False
@@ -427,6 +445,7 @@ class TestWatchdog(unittest.TestCase):
         seconde chaine -- exactement ce que l'idempotence evitait."""
         s = faire_speaker(bus_nominal())
         s.start_watchdog(lambda _st: None)
+        self.addCleanup(s.stop_watchdog)
         premiere = s._watchdog_source
         s.close()
         s.start_watchdog(lambda _st: None)
@@ -434,18 +453,22 @@ class TestWatchdog(unittest.TestCase):
         self.assertNotEqual(s._watchdog_source, premiere)
 
     def test_un_cycle_ne_replanifie_pas_apres_close(self):
-        """L'ancienne implementation appelait _tick_inner meme apres close() :
-        le cycle repartait, et pouvait rouvrir la connexion pendant qu'on la
-        fermait. Espionner _tick_inner est le seul moyen de le voir -- se fier
-        a la valeur de retour de _tick ne discrimine pas, tous les chemins
-        rendent False."""
-        s = faire_speaker(bus_nominal())
+        """L'ancienne implementation laissait le cycle continuer apres
+        close() : is_connected() court-circuite sans toucher au bus des que
+        _dev_path est efface, alors qu'un cycle qui repart atteint connect()
+        et donc GetManagedObjects. bus.appels dit ce qui compte vraiment :
+        que le cycle n'a pas reparle a l'enceinte apres la fermeture -- pas
+        la valeur de retour de _tick, qui ne discrimine rien, tous les
+        chemins rendent False."""
+        bus = bus_nominal()
+        s = faire_speaker(bus)
         s.start_watchdog(lambda _st: None)
+        self.addCleanup(s.stop_watchdog)
         s.close()
-        entres = []
-        s._tick_inner = lambda: entres.append(1) or False
-        self.assertFalse(s._tick())
-        self.assertEqual(entres, [], "le cycle est reparti apres close()")
+        appels_avant = list(bus.appels)
+        s._tick()
+        self.assertEqual(bus.appels, appels_avant,
+                         "le cycle a reparle au bus apres close()")
         self.assertIsNone(s._watchdog_source)
 
     def test_stop_watchdog_preserve_le_chemin_du_device(self):
@@ -454,9 +477,20 @@ class TestWatchdog(unittest.TestCase):
         s = faire_speaker(bus_nominal())
         s.connect(timeout_s=1)
         s.start_watchdog(lambda _st: None)
+        self.addCleanup(s.stop_watchdog)
         s.stop_watchdog()
         self.assertFalse(s._watchdog_on)
         self.assertIsNotNone(s._dev_path)
+
+    def test_reschedule_refuse_de_ressusciter_apres_larret(self):
+        """Chemin mort en usage normal (stop_watchdog coupe la chaine avant
+        qu'un _tick en vol ne rappelle _reschedule), garde neanmoins a dessein :
+        une deuxieme chaine de timers qui reapparait est exactement le bug
+        historique de start_watchdog, sous une autre forme."""
+        s = faire_speaker(bus_nominal())
+        s._watchdog_on = False
+        s._reschedule(1)
+        self.assertIsNone(s._watchdog_source)
 
 
 class TestFermeture(unittest.TestCase):

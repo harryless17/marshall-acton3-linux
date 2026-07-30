@@ -502,12 +502,23 @@ class Speaker:
             return
         self._watchdog_on = True
         self._attempt = 0
-        self._replanifier(self.BACKOFF[0])
+        self._reschedule(self.BACKOFF[0])
 
-    def _replanifier(self, delai_s):
+    def _reschedule(self, delay_s):
         """Un seul endroit ou une source est creee, pour que _watchdog_source
-        soit toujours l'id du timer reellement en attente."""
-        self._watchdog_source = GLib.timeout_add_seconds(delai_s, self._tick)
+        soit toujours l'id du timer reellement en attente.
+
+        Le garde-fou sur _watchdog_on rend structurel ce que seule la
+        discipline des appelants garantissait avant : un cycle en cours au
+        moment d'un stop_watchdog() ne doit pas ressusciter la chaine en
+        replanifiant quand meme. Chemin mort en usage normal (stop_watchdog
+        coupe avant qu'un _tick suivant n'appelle ceci), mais la meme classe
+        de bug -- une deuxieme chaine qui apparait -- a deja coute cher, cf.
+        start_watchdog.
+        """
+        if not self._watchdog_on:
+            return
+        self._watchdog_source = GLib.timeout_add_seconds(delay_s, self._tick)
 
     def stop_watchdog(self):
         """Coupe la chaine de timers, et rien d'autre.
@@ -518,10 +529,7 @@ class Speaker:
         """
         self._watchdog_on = False
         if self._watchdog_source is not None:
-            try:
-                GLib.source_remove(self._watchdog_source)
-            except (ValueError, GLib.Error):
-                pass                 # deja terminee : rien a retirer
+            GLib.source_remove(self._watchdog_source)
             self._watchdog_source = None
 
     def _tick(self):
@@ -529,8 +537,10 @@ class Speaker:
         PyGObject retire la source quand un callback leve, ce qui tuait la
         reconnexion pour le reste de la session -- et sans trace, la sortie
         d'erreur allant dans le vide."""
-        # la source qui nous appelle s'acheve en rendant False : on l'oublie
-        # avant tout, sinon stop_watchdog tenterait de retirer un id mort.
+        # GLib recycle les ids de source : un id perime, si on le laissait
+        # dans _watchdog_source, ferait retirer par un stop_watchdog() futur
+        # une source totalement etrangere choisie au hasard par ce recyclage.
+        # La source qui nous appelle s'acheve de toute facon en rendant False.
         self._watchdog_source = None
         if not self._watchdog_on:
             return False             # coupe pendant l'attente : on s'arrete la
@@ -538,7 +548,7 @@ class Speaker:
             return self._tick_inner()
         except Exception:
             log.exception("watchdog: cycle en echec, on replanifie")
-            self._replanifier(POLL_INTERVAL_S)
+            self._reschedule(POLL_INTERVAL_S)
             return False
 
     def _tick_inner(self):
@@ -551,18 +561,18 @@ class Speaker:
                 if st:
                     self._resubscribe()
                     self._notify(st)
-            self._replanifier(POLL_INTERVAL_S)
+            self._reschedule(POLL_INTERVAL_S)
             return False
 
         if self.connect(timeout_s=CONNECT_TIMEOUT_S):
             self._attempt = 0
             self._resubscribe()          # rebranche meme si subscribe() n'avait
             self._notify(self.get_state())   # jamais reussi avant
-            self._replanifier(POLL_INTERVAL_S)
+            self._reschedule(POLL_INTERVAL_S)
             return False
 
         self._attempt = min(self._attempt + 1, len(self.BACKOFF) - 1)
-        self._replanifier(self.BACKOFF[self._attempt])
+        self._reschedule(self.BACKOFF[self._attempt])
         return False
 
     def _notify(self, state):

@@ -230,14 +230,22 @@ extension `ubuntu-appindicators` active) :
 
 | Approche | Résultat |
 |---|---|
-| `AyatanaAppIndicator3` 0.1 | ne s'enregistre pas auprès du `StatusNotifierWatcher` |
-| `AppIndicator3` 0.1 (Canonical) | idem |
 | **`Gtk.StatusIcon`** | **fonctionne** — apparition/disparition vérifiées par capture d'écran |
+| `AppIndicator3` 0.1 (Canonical) | fonctionne également (voir rectification ci-dessous) |
 
-`libappindicator` cherche le service Unity, ne le trouve pas, et bascule sur
-XEmbed sans jamais tenter le `StatusNotifierWatcher` de GNOME. Son
-`is_embedded()` renvoie d'ailleurs `False` alors que l'icône s'affiche
-correctement — l'API dépréciée est trompeuse sur ce point.
+**Rectification.** Un premier diagnostic avait conclu qu'aucune variante
+d'AppIndicator ne fonctionnait. C'était **faux** : la conclusion reposait sur
+l'absence d'un nom D-Bus `org.kde.StatusNotifierItem-*` que `libappindicator`
+n'utilise pas, et son icône avait été prise pour celle d'une application tierce
+— dans le thème Yaru, `audio-speakers` se dessine en cercles concentriques,
+facile à confondre. `AppIndicator3` s'affiche bien.
+
+`Gtk.StatusIcon` est néanmoins retenu : il fonctionne, et son menu est un vrai
+`Gtk.Menu` rendu localement plutôt que du DBusMenu. Migrer vers AppIndicator
+reste une option valable, celui-ci n'étant pas déprécié.
+
+Note : `Gtk.StatusIcon.is_embedded()` renvoie `False` alors que l'icône
+s'affiche correctement — l'API dépréciée est trompeuse sur ce point.
 
 `Gtk.StatusIcon` est déprécié depuis GTK 3.14 ; les avertissements sont filtrés
 explicitement. Conséquence favorable : son menu est un **vrai `Gtk.Menu` local**

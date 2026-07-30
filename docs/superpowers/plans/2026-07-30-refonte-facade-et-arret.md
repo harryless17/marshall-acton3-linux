@@ -1711,6 +1711,26 @@ git add marshall_ui.py tests/test_knob_widget.py
 git commit -m "feat: le widget Knob, molette rotative au glisse et a la molette"
 ```
 
+### Écarts imposés par l'exécution — mesurés, pas supposés
+
+Le code de l'étape 3 ci-dessus encodait quatre hypothèses sur GTK 3. Trois étaient fausses. Consigné ici pour que personne ne réintroduise la version d'origine.
+
+| Hypothèse du plan | Réalité mesurée | Conséquence |
+|---|---|---|
+| `do_set_sensitive` est un vfunc surchargeable | **Non.** `hasattr(Gtk.DrawingArea, "do_set_sensitive")` est `False` : l'override n'aurait jamais été appelé, et son corps aurait levé s'il l'avait été | Supprimé. GTK 3 invalide déjà tout seul au changement d'état — mesuré : exactement 1 rendu avec ou sans |
+| Un cran de défilement lisse vaut un cran de valeur | **Casse la promesse du ±1.** Un cran de pavé tactile arrive en ~30 événements fractionnaires, donc 30 crans | Accumulateur, remis à zéro sur `ev.is_stop` |
+| Accumuler des flottants suffit | **Non.** Dix `+= 0.1` donnent `0.9999999999999999 < 1.0` : un cran avalé, puis le suivant en franchit deux | `SCROLL_EPSILON = 1e-9`, avec un test qui échoue quand on l'annule |
+| `has_visible_focus()` ne vaut que pour le focus clavier | **Verrou au niveau de la fenêtre** : dès que le clavier a servi une fois, les clics souris suivants montrent aussi l'anneau. Une session tout-souris n'en montre jamais | Comportement conservé — c'est l'heuristique de GTK, identique à ses propres widgets. Commentaire corrigé |
+
+Deux points vérifiés qui, eux, tenaient :
+
+- **Le glissé survit à la sortie du widget** sans grab explicite. Mesuré : 31 événements de mouvement livrés jusqu'à 154 px au-dessus d'un widget de 92 px de haut. L'implicit grab de GTK suffit, donc pas de `Gtk.GestureDrag` ni de `gdk_seat_grab`.
+- **`set_sensitive(False)` arrête bien les événements** : zéro entrée de handler, GTK filtre en amont. Les gardes `get_sensitive()` dans les handlers sont donc de la ceinture-bretelles ; celle de `step()`, en revanche, est porteuse — c'est le chemin programmatique.
+
+Et un défaut de ressenti trouvé à la main, corrigé dans `KnobModel` : voir **le ré-ancrage à la saturation**, plus bas.
+
+Enfin, `test_le_widget_demande_une_taille` a besoin de `k.show()` : GTK 3 rend une taille préférée de `(0, 0)` pour **tout** widget non-toplevel caché. Sans `show()`, le test mesurait le court-circuit de GTK et non notre `set_size_request`.
+
 ---
 
 ## Tâche 8 : `BrassPanel`, `Grille` et `Facade`

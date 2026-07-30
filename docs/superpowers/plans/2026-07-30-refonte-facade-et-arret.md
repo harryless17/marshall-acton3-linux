@@ -1548,8 +1548,8 @@ Expected : FAIL — `AttributeError: module 'marshall_ui' has no attribute 'Knob
 Dans `marshall_ui.py`, après les fonctions de peinture :
 
 ```python
-RAYON_KNOB = 30
-MARGE_KNOB = 6
+KNOB_RADIUS = 24        # r30 laissait trop peu de place au libelle et a la valeur
+KNOB_MARGIN = 6
 
 
 class Knob(Gtk.DrawingArea):
@@ -1571,7 +1571,7 @@ class Knob(Gtk.DrawingArea):
         self._m = KnobModel(maximum=maximum, travel_px=travel_px, value=value)
         self._y_depart = None
 
-        cote = (RAYON_KNOB + MARGE_KNOB) * 2
+        cote = (KNOB_RADIUS + KNOB_MARGIN) * 2
         self.set_size_request(cote, cote)
         self.set_can_focus(True)
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
@@ -1625,7 +1625,7 @@ class Knob(Gtk.DrawingArea):
     # -- rendu ------------------------------------------------------------
     def _on_draw(self, _w, cr):
         alloc = self.get_allocation()
-        rayon = max(6, min(alloc.width, alloc.height) / 2 - MARGE_KNOB)
+        rayon = max(6, min(alloc.width, alloc.height) / 2 - KNOB_MARGIN)
         paint_knob(cr, alloc.width / 2, alloc.height / 2, rayon,
                    self._m.fraction, actif=self.get_sensitive())
         if self.has_visible_focus():

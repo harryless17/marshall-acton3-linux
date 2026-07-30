@@ -1795,7 +1795,7 @@ class Grille(Gtk.DrawingArea):
         alloc = self.get_allocation()
         paint_grille(cr, 0, 0, alloc.width, alloc.height)
         paint_logo(cr, alloc.width / 2, alloc.height / 2,
-                   max(18, min(44, alloc.height * 0.42)))
+                   max(20, min(54, alloc.height * 0.50)))
         return False
 ```
 

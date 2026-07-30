@@ -3,13 +3,23 @@
 
 Icone permanente + menu (etat, presets) et une fenetre de reglages a sliders.
 
-Regle d'architecture importante : la lecture de l'EQ passe par StartNotify, donc
-par une boucle d'evenements. get_state() peut lancer une GLib.MainLoop imbriquee,
-ce qui provoquerait une reentrance si on l'appelait depuis un callback GTK
-d'interaction. Il n'est donc appele qu'a l'initialisation et depuis le watchdog.
-Apres une ecriture, l'etat est mis a jour avec la valeur ecrite -- legitime, car
-WriteValue part en type=request, un write-with-response que l'enceinte acquitte.
+REGLE D'ARCHITECTURE : aucun appel BLE depuis un handler GTK.
+Les appels du module sont synchrones. Il n'y a PAS de risque de reentrance
+(Gio.DBusConnection.call_sync ne pompe pas la boucle GLib), mais un blocage
+franc : tant que l'appel dure, l'interface est gelee et GNOME peut afficher
+"ne repond pas". connect() et get_state() sont donc reserves a l'initialisation
+et au watchdog, tous deux atteints par un timeout GLib et non par un signal.
+
+Les ecritures, elles, partent bien de handlers : elles sont bornees a ~90 ms
+mesures, et protegees par un is_connected() en tete cote module pour ne pas
+partir dans un timeout quand le lien est tombe.
+
+Apres une ecriture reussie, l'etat affiche prend la valeur ecrite. Ce n'est PAS
+une garantie que l'enceinte l'a appliquee (elle peut ignorer une valeur en
+silence) : la notification qui suit corrige l'affichage le cas echeant.
 """
+import logging
+import logging.handlers
 import os
 import sys
 import warnings
@@ -30,7 +40,9 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 sys.path.insert(0, os.path.expanduser("~/.local/share/marshall"))
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from marshall_ble import PRESETS, Speaker, match_preset, BASS_MAX, TREBLE_MAX
+from marshall_ble import (
+    PRESETS, Speaker, match_preset, BASS_MAX, TREBLE_MAX, VOLUME_MAX_FALLBACK,
+)
 
 APP_ID = "org.aghiles.MarshallApplet"
 ICON_OK = "audio-speakers"
@@ -39,11 +51,38 @@ DEBOUNCE_MS = 150       # attente avant d'envoyer un reglage de slider
 REFRESH_MS = 120        # regroupement des rafraichissements d'UI
 
 
+def _setup_log():
+    """Journal sur fichier : lance par l'autostart, l'applet n'a aucune sortie.
+    Sans ca, un plantage est indistinguable d'un arret normal."""
+    d = os.path.join(os.environ.get("XDG_STATE_HOME",
+                                    os.path.expanduser("~/.local/state")), "marshall")
+    try:
+        os.makedirs(d, exist_ok=True)
+        h = logging.handlers.RotatingFileHandler(
+            os.path.join(d, "applet.log"), maxBytes=256_000, backupCount=1)
+    except OSError:
+        h = logging.StreamHandler(sys.stderr)
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(h)
+    root.setLevel(logging.INFO)
+    # Une exception non rattrapee doit laisser une trace, pas disparaitre.
+    sys.excepthook = lambda *a: logging.getLogger("marshall").critical(
+        "exception non rattrapee", exc_info=a)
+    return logging.getLogger("marshall")
+
+
+log = _setup_log()
+
+
 class SettingsWindow(Gtk.Window):
     """Fenetre de reglage fin. Cachee et non detruite a la fermeture, pour que
     l'applet continue de vivre dans la barre."""
 
-    RANGES = (("volume", 31), ("bass", BASS_MAX), ("treble", TREBLE_MAX))
+    # Le max du volume vient de l'enceinte (registre 0x08) et non d'une
+    # constante : il est ajuste par update() des que l'etat est connu.
+    RANGES = (("volume", VOLUME_MAX_FALLBACK),
+              ("bass", BASS_MAX), ("treble", TREBLE_MAX))
 
     def __init__(self, app):
         super().__init__(title="Marshall Acton III")
@@ -67,9 +106,10 @@ class SettingsWindow(Gtk.Window):
             sc.set_hexpand(True)
             sc.set_digits(0)
             sc.set_value_pos(Gtk.PositionType.RIGHT)
-            step = max(1, top // 5)
-            for t in range(0, top + 1, step):
-                sc.add_mark(t, Gtk.PositionType.BOTTOM, None)
+            # 6 marques reparties bornes incluses : top // 5 laissait la
+            # derniere marque en deca du maximum (0/6/12/18/24/30 pour 31).
+            for i in range(6):
+                sc.add_mark(round(top * i / 5), Gtk.PositionType.BOTTOM, None)
             sc.connect("value-changed", self.on_scale, key)
             grid.attach(lbl, 0, row, 1, 1)
             grid.attach(sc, 1, row, 1, 1)
@@ -89,6 +129,14 @@ class SettingsWindow(Gtk.Window):
         self.connect("delete-event", self.on_close)
         self._loading = False        # construction finie, les gestes comptent
 
+    def _retop_volume(self, top):
+        """Aligne l'echelle de volume sur le maximum annonce par l'enceinte."""
+        sc = self.scales["volume"]
+        sc.get_adjustment().set_upper(top)
+        sc.clear_marks()
+        for i in range(6):
+            sc.add_mark(round(top * i / 5), Gtk.PositionType.BOTTOM, None)
+
     def on_close(self, *_a):
         self.hide()
         return True                  # cacher, pas detruire
@@ -99,7 +147,15 @@ class SettingsWindow(Gtk.Window):
         self._loading = True
         try:
             if state:
+                top = state.get("max_volume")
+                if top and self.scales["volume"].get_adjustment().get_upper() != top:
+                    self._retop_volume(top)
                 for key, sc in self.scales.items():
+                    # ne pas ecraser une valeur que l'utilisateur vient de poser
+                    # et dont l'envoi est encore en attente : la poignee
+                    # sauterait en arriere sous son doigt
+                    if key in self.app._pending:
+                        continue
                     if key in state and sc.get_value() != state[key]:
                         sc.set_value(state[key])
             self.status.set_text("● connectée" if connected
@@ -131,6 +187,7 @@ class Applet(Gtk.Application):
         self._pending = {}       # reglages en attente d'envoi (debounce)
         self._timer = None       # id du timeout de debounce en cours
         self._refresh_timer = None   # id du regroupement de rafraichissement
+        self._connecting = False     # garde anti-empilement de "Reconnecter"
 
     # -- cycle de vie -----------------------------------------------------
     def do_activate(self):
@@ -159,27 +216,72 @@ class Applet(Gtk.Application):
                              icon, button, time)
 
     def _initial_connect(self):
-        if self.spk.connect(timeout_s=30):
-            self.state = self.spk.get_state()
+        """Connexion initiale, et point d'entree de "Reconnecter".
+
+        subscribe() est appele INCONDITIONNELLEMENT : il memorise le callback
+        meme hors connexion, et le watchdog rebranche les abonnements des que le
+        lien est la. Auparavant, une enceinte eteinte a l'ouverture de session
+        privait toute la session des notifications de molettes physiques.
+        """
+        if self._connecting:
+            return False                     # deja en cours, ne pas empiler
+        self._connecting = True
+        try:
+            if self.spk.connect(timeout_s=30):
+                self.state = self.spk.get_state()
+                if self.state is None:
+                    log.warning("connecte mais etat illisible")
             self.spk.subscribe(self.on_external_change)
-        self.spk.start_watchdog(self.on_external_change)
+            self.spk.start_watchdog(self.on_external_change)   # idempotent
+        except Exception:
+            log.exception("connexion initiale en echec")
+        finally:
+            self._connecting = False
         self._refresh()
         return False                         # ne pas replanifier l'idle
+
+    def do_shutdown(self):
+        """Envoie ce qui attend, puis libere le canal BLE.
+
+        Sans le Disconnect, BlueZ gardait le lien ouvert apres "Quitter" : le
+        canal restait monopolise alors que l'utilisateur venait de fermer.
+        """
+        try:
+            if self._pending:
+                pending, self._pending = dict(self._pending), {}
+                for key, value in pending.items():
+                    getattr(self.spk, f"set_{key}")(value)
+            self.spk.disconnect()
+            self.spk.close()
+        except Exception:
+            log.exception("arret : liberation incomplete")
+        Gtk.Application.do_shutdown(self)
 
     # -- etat -------------------------------------------------------------
     def on_external_change(self, state):
         """Changement venu de l'enceinte, ou reconnexion.
 
-        Annule un envoi en attente : si l'utilisateur vient d'agir sur
-        l'enceinte elle-meme, sa valeur doit gagner sur un slider en vol.
+        N'annule que les registres effectivement rapportes : si l'utilisateur a
+        tourne la molette de volume, cela ne doit pas jeter un reglage de bass
+        encore en vol.
         """
-        self._cancel_pending()
         if state:
+            changed = [k for k in ("volume", "bass", "treble")
+                       if not self.state or self.state.get(k) != state.get(k)]
+            self._cancel_pending(changed)
             self.state = state
         self._refresh()
 
     def _connected(self):
-        return self.spk.is_connected() and bool(self.state)
+        """Connecte ET etat exploitable.
+
+        Exiger les 4 cles, pas seulement un dict non vide : un etat partiel
+        faisait lever KeyError dans _do_refresh et _rebuild_menu, en boucle,
+        laissant l'applet a moitie mort definitivement.
+        """
+        return (self.spk.is_connected() and isinstance(self.state, dict)
+                and all(k in self.state
+                        for k in ("volume", "max_volume", "bass", "treble")))
 
     def _refresh(self):
         """Demande un rafraichissement, au plus un toutes les REFRESH_MS.
@@ -231,13 +333,17 @@ class Applet(Gtk.Application):
 
         active = match_preset(self.state["bass"], self.state["treble"]) \
             if connected else None
-        group = None
+        # CheckMenuItem dessine en radio, et NON Gtk.RadioMenuItem : un groupe
+        # radio ne sait pas representer "aucun preset actif". GTK y activait
+        # d'office le premier item, donc "Neutre" apparaissait coche des que les
+        # reglages ne correspondaient a rien -- et cliquer un item deja actif
+        # n'emet aucun signal, le clic etait donc mort.
         for name in PRESETS:
-            it = Gtk.RadioMenuItem(label=name, group=group)
-            group = group or it
+            it = Gtk.CheckMenuItem(label=name)
+            it.set_draw_as_radio(True)
             it.set_active(name == active)
             it.set_sensitive(connected)
-            it.connect("toggled", self.on_preset, name)
+            it.connect("activate", self.on_preset, name)
             m.append(it)
 
         m.append(Gtk.SeparatorMenuItem())
@@ -260,13 +366,13 @@ class Applet(Gtk.Application):
         m.show_all()
         self._menu = m           # garder une reference, sinon ramasse-miettes
 
-    def on_preset(self, widget, name):
-        if not widget.get_active():
-            return
-        p = PRESETS[name]
-        if (self.state and p["bass"] == self.state["bass"]
-                and p["treble"] == self.state["treble"]):
-            return                           # deja applique, ne pas re-ecrire
+    def on_preset(self, _widget, name):
+        """Clic sur un preset du menu.
+
+        Sur "activate" et non "toggled" : on veut reagir au clic, pas a l'etat
+        de la coche -- qui est recalculee par le rebuild de toute facon. Le
+        rebuild etant declenche par _refresh, on ne touche pas a la coche ici.
+        """
         self.apply_preset(name)
 
     def on_settings(self, _w):
@@ -277,32 +383,81 @@ class Applet(Gtk.Application):
         self.win.present()
 
     # -- ecriture ---------------------------------------------------------
-    def _cancel_pending(self):
-        """Annule un envoi de slider en attente. Un preset, ou un changement
-        venu de l'enceinte, doit gagner sur un debounce encore en vol."""
-        if self._timer is not None:
+    def _cancel_pending(self, keys=None):
+        """Annule les envois en attente, par defaut UNIQUEMENT ceux que l'on
+        s'apprete a ecraser.
+
+        L'annulation etait globale, alors que le conflit est par registre :
+        regler le volume puis cliquer un preset dans les 150 ms perdait le
+        volume (un preset ne touche pourtant jamais au volume), et n'importe
+        quelle notification effacait n'importe quel reglage en attente.
+        keys=None annule tout -- reserve a l'arret de l'applet.
+        """
+        if keys is None:
+            self._pending.clear()
+        else:
+            for k in keys:
+                self._pending.pop(k, None)
+        if not self._pending and self._timer is not None:
             GLib.source_remove(self._timer)
             self._timer = None
-        self._pending.clear()
+
+    SETTERS = ("volume", "bass", "treble")
 
     def _apply(self, values):
-        """Ecrit puis met a jour l'etat AVEC LES VALEURS ECRITES.
+        """Ecrit puis met a jour l'etat avec les valeurs ecrites.
 
-        Pas de get_state() ici : on est dans un callback GTK et get_state()
-        lance une boucle GLib imbriquee -> reentrance. Ce n'est pas de
-        l'optimisme aveugle : WriteValue part en type=request, un
-        write-with-response que l'enceinte acquitte. Un echec laisse
-        l'affichage inchange plutot que de mentir.
+        Pas de get_state() ici : on est appele depuis un handler GTK, et une
+        lecture complete y gelerait l'interface. Les ecritures, elles, sont
+        bornees (~90 ms mesures) et refusees d'emblee par le module si le lien
+        est tombe.
+
+        La valeur affichee est celle DEMANDEE, pas une valeur confirmee :
+        l'enceinte peut ignorer une ecriture en silence, la notification
+        suivante corrigera alors l'affichage.
         """
+        if "bass" in values and "treble" in values:
+            # une seule trame : deux fois plus rapide, et pas de course entre
+            # les deux ecritures (la seconde relisait ce que la premiere venait
+            # tout juste d'ecrire)
+            if self.spk.set_eq(values["bass"], values["treble"]):
+                if self.state:
+                    self.state["bass"] = values["bass"]
+                    self.state["treble"] = values["treble"]
+            else:
+                log.warning("ecriture EQ refusee")
+            values = {k: v for k, v in values.items()
+                      if k not in ("bass", "treble")}
+
         for key, value in values.items():
-            if getattr(self.spk, f"set_{key}")(value) and self.state:
-                self.state[key] = value
+            if key not in self.SETTERS:
+                log.error("reglage inconnu ignore : %s", key)
+                continue
+            if getattr(self.spk, f"set_{key}")(value):
+                if self.state:
+                    self.state[key] = value
+            else:
+                log.warning("ecriture refusee : %s=%s", key, value)
         self._refresh()
 
     def apply_preset(self, name):
-        self._cancel_pending()
+        """Applique un preset : bass et treble en UNE trame, jamais le volume.
+
+        Le garde "deja applique" est ici et non dans les appelants, pour que les
+        deux chemins (menu et boutons de la fenetre) se comportent pareil.
+        """
         p = PRESETS[name]
-        self._apply({"bass": p["bass"], "treble": p["treble"]})
+        if (self.state and p["bass"] == self.state.get("bass")
+                and p["treble"] == self.state.get("treble")):
+            return                           # rien a ecrire
+        self._cancel_pending(("bass", "treble"))
+        if self.spk.set_eq(p["bass"], p["treble"]):
+            if self.state:
+                self.state["bass"] = p["bass"]
+                self.state["treble"] = p["treble"]
+        else:
+            log.warning("preset %s refuse par l'enceinte", name)
+        self._refresh()
 
     def schedule_write(self, key, value):
         """Un glissement de slider emet des dizaines d'evenements ; sur un canal

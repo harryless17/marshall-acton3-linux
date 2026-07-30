@@ -6,8 +6,11 @@ complete des registres et les pieges du firmware.
 
 Ce module ne connait rien de GTK.
 """
-import gi
+import logging
+
 from gi.repository import Gio, GLib
+
+log = logging.getLogger("marshall")
 
 BLUEZ = "org.bluez"
 CHAR_IF = "org.bluez.GattCharacteristic1"
@@ -18,6 +21,27 @@ OBJMGR_IF = "org.freedesktop.DBus.ObjectManager"
 BASS_MAX = 10
 TREBLE_MAX = 10
 VOLUME_MAX_FALLBACK = 31
+
+_STATE_KEYS = ("volume", "max_volume", "bass", "treble")
+
+# Timeouts. Mesures sur le materiel, lien etabli : ReadValue et WriteValue
+# repondent en ~90 ms. Les valeurs ci-dessous sont donc genereuses tout en
+# bornant le gel de l'appelant si l'enceinte ne repond plus.
+WRITE_TIMEOUT_MS = 4000
+READ_TIMEOUT_MS = 2000
+CACHED_READ_TIMEOUT_MS = 3000
+CONNECT_TIMEOUT_S = 20
+POLL_INTERVAL_S = 30        # sondage quand le lien est deja etabli
+
+
+def _plausible_eq(eq):
+    """Ecarte les trames absurdes (0xff = "intouche", ou autre semantique).
+
+    Le chemin ecriture borne partout ; le chemin lecture ne bornait rien, si
+    bien qu'une trame ff ff ff ff ff donnait bass=255 dans l'interface.
+    """
+    bass, treble = eq
+    return 0 <= bass <= BASS_MAX and 0 <= treble <= TREBLE_MAX
 
 _BASE = "1337-1dea-feed-c0ffee70c0de"
 UUID_VOLUME = f"00000007-{_BASE}"
@@ -62,7 +86,9 @@ class Speaker:
         self._callback = None
         self._subs = []
         self._attempt = 0
-        self._dev_path = None    # device porteur du service de controle
+        self._dev_path = None       # device porteur du service de controle
+        self._callback_change = None
+        self._watchdog_on = False   # une seule chaine de timers, cf. start_watchdog
 
     # -- introspection ----------------------------------------------------
     def _managed(self):
@@ -167,20 +193,38 @@ class Speaker:
         return False
 
     def is_connected(self):
-        """Connexion reellement active ET service de controle accessible."""
+        """Connexion reellement active ET service de controle accessible.
+
+        Purge le cache a la premiere detection d'une coupure : ses valeurs sont
+        alors perimees, et la propriete Value de BlueZ survit a la deconnexion
+        (verifie) -- garder l'ancien etat ferait afficher du faux comme du vrai.
+        """
         if not self._device_connected(self._dev_path):
+            if self._cache:
+                self._cache = {}
             return False
         eq = self._path(UUID_EQ)
-        return bool(eq) and eq.startswith(self._dev_path + "/")
+        if not eq or not eq.startswith(self._dev_path + "/"):
+            return False
+        return True
 
     def close(self):
+        """Libere tout : abonnements, cache, identite du device.
+
+        Le cache DOIT etre purge, sinon une reconnexion ulterieure melangerait
+        des valeurs fraiches (arrivees par notification) avec des valeurs de la
+        session precedente, et livrerait ce melange comme un etat coherent.
+        """
         for sub in self._subs:
             self._bus.signal_unsubscribe(sub)
         self._subs = []
         self._chars = {}
+        self._cache = {}
+        self._dev_path = None
+        self._watchdog_on = False
 
     # -- lecture ----------------------------------------------------------
-    def _read_direct(self, path, timeout=4000):
+    def _read_direct(self, path, timeout=READ_TIMEOUT_MS):
         try:
             res = self._bus.call_sync(
                 BLUEZ, path, CHAR_IF, "ReadValue",
@@ -208,7 +252,7 @@ class Speaker:
         except GLib.Error:
             return False
 
-    def _read_cached(self, path, timeout_ms=8000):
+    def _read_cached(self, path, timeout_ms=CACHED_READ_TIMEOUT_MS):
         """Lit la propriete Value, que BlueZ tient a jour tant que Notifying
         est actif.
 
@@ -245,23 +289,31 @@ class Speaker:
         return self._read_direct(p) or self._read_cached(p)
 
     def get_state(self):
-        """Lecture synchrone complete.
+        """Lecture synchrone. Rend un etat COMPLET (4 cles) ou None.
 
-        ATTENTION : peut lancer une GLib.MainLoop imbriquee (via read_eq).
-        Reserve au CLI, a l'initialisation et au watchdog -- jamais depuis un
-        callback GTK d'interaction.
+        ATTENTION : bloquant. Aucune reentrance possible (call_sync ne pompe pas
+        la boucle GLib), mais l'appelant est gele pendant l'appel. A n'appeler
+        que hors handler GTK : initialisation, watchdog, CLI.
+
+        Ne fabrique aucune valeur : si le volume est illisible on rend None
+        plutot qu'un "volume 0" qui serait pris pour une lecture reussie.
         """
         if not self.is_connected():
             return None
         eq = decode_eq(self.read_eq())
-        if eq is None:
+        if eq is None or not _plausible_eq(eq):
             return None
         pv, pm = self._path(UUID_VOLUME), self._path(UUID_MAXVOL)
         v = self._read_direct(pv) if pv else None
+        if not v:
+            return None                      # pas d'invention de valeur
         m = self._read_direct(pm) if pm else None
+        top = m[0] if m else 0
+        if not top:                          # 0x00 illisible ou absurde
+            top = VOLUME_MAX_FALLBACK
         state = {
-            "volume": v[0] if v else 0,
-            "max_volume": m[0] if m else VOLUME_MAX_FALLBACK,
+            "volume": min(v[0], top),
+            "max_volume": top,
             "bass": eq[0],
             "treble": eq[1],
         }
@@ -270,30 +322,47 @@ class Speaker:
 
     # -- ecriture ---------------------------------------------------------
     def _write(self, path, payload):
-        """WriteValue avec type=request, repli sur command.
+        """WriteValue en type=request (write-with-response).
 
-        type=request est un write-with-response : un retour sans erreur signifie
-        que l'enceinte a acquitte la valeur au niveau ATT. C'est ce qui autorise
-        l'appelant a considerer la valeur comme appliquee sans relire.
+        ATTENTION a ne pas surinterpreter le retour : un True signifie que
+        l'enceinte a acquitte au niveau ATT, PAS qu'elle a applique la valeur.
+        Mesure a l'appui : ecrire bass=12 (hors plage) rend sans erreur et
+        l'enceinte ignore purement l'ecriture. L'appelant doit donc verifier par
+        relecture ou par notification s'il veut une garantie.
+
+        Pas de repli en type=command : c'est un write-without-response, donc sans
+        acquittement d'aucune sorte -- il ferait croire a un succes alors que
+        rien ne serait parti.
 
         A noter : bluetoothctl rend NotSupported sur un payload multi-octets,
         l'appel D-Bus direct fonctionne.
         """
-        for kind in ("request", "command"):
-            try:
-                self._bus.call_sync(
-                    BLUEZ, path, CHAR_IF, "WriteValue",
-                    GLib.Variant("(aya{sv})",
-                                 (bytes(payload), {"type": GLib.Variant("s", kind)})),
-                    None, Gio.DBusCallFlags.NONE, 8000, None)
-                return True
-            except GLib.Error:
-                continue
-        return False
+        try:
+            self._bus.call_sync(
+                BLUEZ, path, CHAR_IF, "WriteValue",
+                GLib.Variant("(aya{sv})",
+                             (bytes(payload), {"type": GLib.Variant("s", "request")})),
+                None, Gio.DBusCallFlags.NONE, WRITE_TIMEOUT_MS, None)
+            return True
+        except GLib.Error:
+            return False
+
+    def _current_eq(self):
+        """bass/treble courants, depuis le cache si possible.
+
+        Le cache est alimente en continu par les notifications (~90 ms de
+        latence). L'utiliser evite une relecture qui, hors connexion, bloquait
+        l'appelant plusieurs secondes.
+        """
+        if "bass" in self._cache and "treble" in self._cache:
+            return self._cache["bass"], self._cache["treble"]
+        return decode_eq(self.read_eq())
 
     def _set_eq_band(self, band, value):
         """Read-modify-write : ne jamais ecraser l'autre bande."""
-        cur = decode_eq(self.read_eq())
+        if not self.is_connected():
+            return False
+        cur = self._current_eq()
         if cur is None:
             return False
         bass, treble = cur
@@ -314,13 +383,41 @@ class Speaker:
     def set_treble(self, v):
         return self._set_eq_band("treble", v)
 
+    def set_eq(self, bass, treble):
+        """Ecrit les deux bandes en UNE trame.
+
+        Deux fois plus rapide qu'un set_bass suivi d'un set_treble, et surtout
+        sans fenetre de course entre les deux (le second relisait ce que le
+        premier venait d'ecrire). C'est ce que doivent utiliser les presets.
+        """
+        if not self.is_connected():
+            return False
+        p = self._path(UUID_EQ)
+        if not p or not self._write(p, encode_eq(bass, treble)):
+            return False
+        self._cache.update(bass=clamp(bass, 0, BASS_MAX),
+                           treble=clamp(treble, 0, TREBLE_MAX))
+        return True
+
+    def max_volume(self):
+        """Volume max, mis en cache : 0x08 est en lecture seule et constant."""
+        if self._cache.get("max_volume"):
+            return self._cache["max_volume"]
+        pm = self._path(UUID_MAXVOL)
+        m = self._read_direct(pm) if pm else None
+        top = m[0] if m else 0
+        if not top:                     # 0x00 renvoye : ne pas borner a 0
+            top = VOLUME_MAX_FALLBACK
+        self._cache["max_volume"] = top
+        return top
+
     def set_volume(self, v):
-        p, pm = self._path(UUID_VOLUME), self._path(UUID_MAXVOL)
+        if not self.is_connected():
+            return False
+        p = self._path(UUID_VOLUME)
         if not p:
             return False
-        m = self._read_direct(pm) if pm else None
-        top = m[0] if m else VOLUME_MAX_FALLBACK
-        value = clamp(v, 0, top)
+        value = clamp(v, 0, self.max_volume())
         if not self._write(p, [value]):
             return False
         self._cache["volume"] = value
@@ -332,11 +429,21 @@ class Speaker:
 
         Le callback est toujours invoque sur la boucle principale GLib, jamais
         depuis un thread : l'appelant peut toucher l'UI directement.
+
+        Peut etre appele hors connexion : le callback est memorise, et le
+        watchdog rebranchera les abonnements des que le lien sera etabli. Sans
+        cela, une enceinte eteinte au demarrage privait la session entiere des
+        notifications de molettes physiques.
         """
         self._callback = callback
+        self._resubscribe()
+
+    def _resubscribe(self):
         for sub in self._subs:
             self._bus.signal_unsubscribe(sub)
         self._subs = []
+        if not self._callback:
+            return
 
         for uuid in (UUID_EQ, UUID_VOLUME):
             p = self._path(uuid)
@@ -345,11 +452,7 @@ class Speaker:
             self._subs.append(self._bus.signal_subscribe(
                 BLUEZ, PROP_IF, "PropertiesChanged", p, None,
                 Gio.DBusSignalFlags.NONE, self._on_prop_changed))
-            try:
-                self._bus.call_sync(BLUEZ, p, CHAR_IF, "StartNotify", None, None,
-                                    Gio.DBusCallFlags.NONE, 6000, None)
-            except GLib.Error:
-                pass
+            self._start_notify(p)
 
     def _on_prop_changed(self, _c, _s, obj_path, _i, _sig, params):
         _iface, changed, _inv = params.unpack()
@@ -358,41 +461,109 @@ class Speaker:
         raw = bytes(changed["Value"])
         if obj_path == self._path(UUID_EQ):
             eq = decode_eq(raw)
-            if eq:
-                self._cache.update(bass=eq[0], treble=eq[1])
+            if not eq or not _plausible_eq(eq):
+                return                  # trame absurde : ne pas polluer le cache
+            self._cache.update(bass=eq[0], treble=eq[1])
         elif obj_path == self._path(UUID_VOLUME) and raw:
+            top = self._cache.get("max_volume") or VOLUME_MAX_FALLBACK
+            if raw[0] > top:
+                return                  # hors plage : trame ininterpretable
             self._cache["volume"] = raw[0]
         else:
             return
-        self._cache.setdefault("max_volume", VOLUME_MAX_FALLBACK)
-        self._callback(dict(self._cache))
+
+        # N'emettre que des etats COMPLETS. Le cache peut n'avoir qu'une partie
+        # des cles (get_state jamais passe, ou echoue) ; livrer un dict partiel
+        # faisait lever KeyError chez le consommateur, en boucle.
+        state = self.cached_state()
+        if state is not None:
+            self._callback(state)
+
+    def cached_state(self):
+        """Etat complet depuis le cache, ou None s'il est incomplet."""
+        if all(k in self._cache for k in _STATE_KEYS):
+            return {k: self._cache[k] for k in _STATE_KEYS}
+        return None
 
     def start_watchdog(self, on_change):
-        """Reconnecte en tache de fond.
+        """Reconnecte en tache de fond, et resynchronise l'etat.
 
         Le dernier palier (30 s) est conserve indefiniment : rallumer l'enceinte
-        doit suffire a la reprendre, sans rien relancer. Le cout est negligeable,
-        un appel D-Bus local toutes les 30 s.
+        doit suffire a la reprendre, sans rien relancer.
+
+        Idempotent : plusieurs appels ne creent qu'une seule chaine de timers.
+        Sans cela, chaque clic sur "Reconnecter" en empilait une de plus, chacune
+        lancant ses propres connexions bloquantes et se volant le compteur de
+        backoff.
         """
+        self._callback_change = on_change
+        if self._watchdog_on:
+            return
+        self._watchdog_on = True
         self._attempt = 0
+        GLib.timeout_add_seconds(self.BACKOFF[0], self._tick)
 
-        def tick():
-            if self.is_connected():
-                self._attempt = 0
-                return True                    # replanifie au meme intervalle
+    def _tick(self):
+        """Un cycle de surveillance. Ne doit JAMAIS laisser filer d'exception :
+        PyGObject retire la source quand un callback leve, ce qui tuait la
+        reconnexion pour le reste de la session -- et sans trace, la sortie
+        d'erreur allant dans le vide."""
+        try:
+            return self._tick_inner()
+        except Exception:
+            log.exception("watchdog: cycle en echec, on replanifie")
+            GLib.timeout_add_seconds(POLL_INTERVAL_S, self._tick)
+            return False
 
-            if self.connect(timeout_s=20):
-                self._attempt = 0
-                if self._callback:
-                    self.subscribe(self._callback)   # re-abonner apres coupure
-                on_change(self.get_state())
-                return True
+    def _tick_inner(self):
+        if self.is_connected():
+            self._attempt = 0
+            # Lien up mais etat inconnu : c'etait une impasse, le watchdog
+            # considerait la connexion bonne et ne relisait jamais l'etat.
+            if self.cached_state() is None:
+                st = self.get_state()
+                if st:
+                    self._resubscribe()
+                    self._notify(st)
+            GLib.timeout_add_seconds(POLL_INTERVAL_S, self._tick)
+            return False
 
-            self._attempt = min(self._attempt + 1, len(self.BACKOFF) - 1)
-            GLib.timeout_add_seconds(self.BACKOFF[self._attempt], tick)
-            return False                       # celui-ci s'arrete, le nouveau prend
+        if self.connect(timeout_s=CONNECT_TIMEOUT_S):
+            self._attempt = 0
+            self._resubscribe()          # rebranche meme si subscribe() n'avait
+            self._notify(self.get_state())   # jamais reussi avant
+            GLib.timeout_add_seconds(POLL_INTERVAL_S, self._tick)
+            return False
 
-        GLib.timeout_add_seconds(self.BACKOFF[0], tick)
+        self._attempt = min(self._attempt + 1, len(self.BACKOFF) - 1)
+        GLib.timeout_add_seconds(self.BACKOFF[self._attempt], self._tick)
+        return False
+
+    def _notify(self, state):
+        if self._callback_change:
+            self._callback_change(state)
+
+    def disconnect(self):
+        """Coupe le lien LE et libere le canal de controle.
+
+        Sans cela, quitter l'applet laissait BlueZ connecte : le canal restait
+        monopolise alors que l'utilisateur venait justement de fermer pour
+        laisser la place a autre chose.
+        """
+        for uuid in (UUID_EQ, UUID_VOLUME):
+            p = self._path(uuid)
+            if p:
+                try:
+                    self._bus.call_sync(BLUEZ, p, CHAR_IF, "StopNotify", None, None,
+                                        Gio.DBusCallFlags.NONE, 4000, None)
+                except GLib.Error:
+                    pass
+        if self._dev_path:
+            try:
+                self._bus.call_sync(BLUEZ, self._dev_path, DEV_IF, "Disconnect",
+                                    None, None, Gio.DBusCallFlags.NONE, 8000, None)
+            except GLib.Error:
+                pass
 
 
 def decode_eq(raw):

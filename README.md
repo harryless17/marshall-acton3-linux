@@ -1,4 +1,56 @@
-# marshall-applet
+# marshall-acton3-linux
+
+Control your **Marshall Acton III** speaker from Linux — volume, bass and treble
+— without reaching for the physical knobs and without the Marshall mobile app
+(which has no Linux version).
+
+<details>
+<summary><b>English — quick start</b></summary>
+
+A GNOME tray applet plus a CLI, talking to the speaker's proprietary BLE control
+service through BlueZ over D-Bus. No PyPI dependencies, no virtualenv.
+
+```bash
+sudo apt install python3-gi gir1.2-gtk-3.0 bluez gnome-shell-extension-appindicator
+git clone https://github.com/harryless17/marshall-acton3-linux
+cd marshall-acton3-linux && ./install.sh
+```
+
+The speaker exposes **two Bluetooth identities**: the audio one (A2DP, leave it
+alone) and a separate BLE one for control. You must pair the BLE identity once,
+**with an authentication agent** — otherwise BlueZ refuses:
+
+```bash
+bluetoothctl --timeout 12 scan le | grep -i acton     # find "ACTON III [LE]"
+
+{ echo "agent on"; sleep 1; echo "default-agent"; sleep 1; \
+  echo "scan on"; sleep 8; echo "pair XX:XX:XX:XX:XX:XX"; sleep 25; \
+  echo "quit"; } | bluetoothctl
+```
+
+Then:
+
+```bash
+marshall-ctl                   # show current state
+marshall-ctl bass 6 treble 8   # 0..10 each
+marshall-ctl volume 20         # 0..31
+marshall-ctl preset Musique    # Neutre | Films | Musique | Voix / podcast
+```
+
+The tray icon gives sliders (left click) and presets (right click), and reflects
+the speaker's physical knobs live.
+
+**Requires X11** — the applet uses `Gtk.StatusIcon`, which has no Wayland
+equivalent. The CLI works anywhere. The tray extension must be enabled, or the
+applet runs but stays invisible.
+
+Protocol notes, firmware quirks and the reasoning behind the code are in
+[`docs/`](docs/superpowers/specs/2026-07-30-marshall-applet-design.md). Comments
+and documentation below are in French.
+
+</details>
+
+---
 
 Régler le **volume, le bass et le treble** d'une enceinte **Marshall Acton III**
 depuis Linux, sans toucher aux molettes physiques et sans passer par
@@ -193,3 +245,39 @@ Les pièges du firmware, et pourquoi le code est écrit comme il est, sont
 documentés dans
 [`docs/superpowers/specs/`](docs/superpowers/specs/2026-07-30-marshall-applet-design.md).
 Le plan d'implémentation qui l'accompagne est un **document historique périmé**.
+
+## Contribuer
+
+Les retours sont bienvenus, en particulier :
+
+- **d'autres modèles Marshall** (Stanmore, Woburn…). Le protocole est
+  probablement proche ; `tests/manual_notify_probe.py` et l'outil `probe.py` du
+  projet amont permettent de cartographier les registres d'un autre firmware ;
+- **les registres encore inconnus** de l'Acton III : `0x01`, `0x09`, `0x0a`,
+  `0x1b`, `0x1e`, `0x1f` — vraisemblablement source d'entrée, LED, lecture/pause ;
+- **Wayland**, qui demanderait de remplacer `Gtk.StatusIcon` par une
+  implémentation de `StatusNotifierItem` ;
+- toute divergence de comportement sur une autre distribution ou un autre
+  firmware.
+
+Avant d'ouvrir une PR : `python3 -m unittest discover -s tests -t .` doit passer.
+Les tests sans matériel (faux bus D-Bus, faux Speaker) tournent partout, donc une
+contribution est vérifiable même sans posséder l'enceinte.
+
+Les commentaires et la documentation sont en français ; une PR en anglais ne me
+dérange pas.
+
+## Avertissement
+
+Projet non affilié à Marshall ni à Zound Industries. Le protocole a été obtenu
+par observation du trafic BLE, il n'est ni documenté ni garanti par le
+fabricant : une mise à jour de firmware peut le changer sans préavis. Le code
+n'écrit que dans les registres de volume et d'égalisation, mais il est fourni
+**sans aucune garantie** — voir la licence.
+
+Ne retirez jamais l'appairage de l'identité **audio** de l'enceinte : seule
+l'identité `[LE]` concerne cet outil.
+
+## Licence
+
+[MIT](LICENSE) — faites-en ce que vous voulez, en conservant l'avis de copyright.

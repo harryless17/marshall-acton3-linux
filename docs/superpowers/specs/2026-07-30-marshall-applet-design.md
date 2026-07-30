@@ -20,8 +20,8 @@ L'enceinte expose **deux identités Bluetooth distinctes** :
 
 | Identité | Adresse | Usage |
 |---|---|---|
-| BR/EDR | `74:68:59:6F:AD:B1` | audio A2DP — appairée, **ne jamais y toucher** |
-| BLE | privée tournante (`C1:3F:…`, `C9:B0:…`) | canal de contrôle |
+| BR/EDR | `<adresse-audio>` | audio A2DP — appairée, **ne jamais y toucher** |
+| BLE | privée et **tournante** — deux identités observées simultanément | canal de contrôle |
 
 Service de contrôle `0000fccd-0000-1000-8000-00805f9b34fb`, caractéristiques
 `0000000N-1337-1dea-feed-c0ffee70c0de` :
@@ -88,8 +88,8 @@ d'événements.
 `marshall-ctl` est **réécrit** sur le module partagé, ce qui supprime le venv
 `dbus-fast` et laisse une seule implémentation du protocole.
 
-Les réglages d'origine de l'utilisateur, à préserver : **bass=10, treble=7,
-volume=12**. Le preset « Musique » les reprend exactement.
+Note : le preset « Musique » (10/7) reprend les réglages qui étaient en place
+sur le matériel de développement, d'où son existence.
 
 ## Architecture
 

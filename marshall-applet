@@ -44,7 +44,7 @@ from marshall_ble import (
     PRESETS, Speaker, match_preset, BASS_MAX, TREBLE_MAX, VOLUME_MAX_FALLBACK,
 )
 
-APP_ID = "org.aghiles.MarshallApplet"
+APP_ID = "io.github.harryless17.MarshallApplet"
 ICON_OK = "audio-speakers"
 ICON_OFF = "audio-volume-muted"
 DEBOUNCE_MS = 150       # attente avant d'envoyer un reglage de slider

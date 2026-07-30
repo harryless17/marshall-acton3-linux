@@ -41,8 +41,8 @@
 - **Le registre EQ `0x0f` ne répond PAS à `ReadValue`** (l'appel pend jusqu'au timeout) mais **pousse sa valeur dès `StartNotify`**. Toute lecture d'EQ passe par l'abonnement.
 - **Jamais d'adresse BLE en dur** : elle est privée et tournante. On résout le device en cherchant la caractéristique EQ dans `GetManagedObjects`.
 - **`WriteValue` avec `{"type": "request"}`**, repli `"command"`.
-- L'identité BLE doit être **bonded** au préalable (déjà fait sur la machine cible : `C1:3F:B3:48:69:09`).
-- Ne **jamais** faire de `remove` sur `74:68:59:6F:AD:B1` — c'est l'appairage audio.
+- L'identité BLE doit être **bonded** au préalable (déjà fait sur la machine cible : `<adresse-BLE>`).
+- Ne **jamais** faire de `remove` sur `<adresse-audio>` — c'est l'appairage audio.
 - Valeurs d'origine de l'utilisateur à restaurer après tout test : **bass=10, treble=7, volume=12**.
 
 ## Structure des fichiers
@@ -980,7 +980,7 @@ sys.path.insert(0, os.path.expanduser("~/.local/share/marshall"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from marshall_ble import PRESETS, Speaker, match_preset, BASS_MAX, TREBLE_MAX
 
-APP_ID = "org.aghiles.MarshallApplet"
+APP_ID = "io.github.harryless17.MarshallApplet"
 ICON_OK = "audio-speakers"
 ICON_OFF = "audio-volume-muted"
 
@@ -1383,7 +1383,7 @@ git commit -m "docs: validation manuelle de bout en bout"
 
 ## Points de vigilance
 
-- **Ne jamais** faire de `bluetoothctl remove` sur `74:68:59:6F:AD:B1` : c'est l'appairage audio, le son serait à réappairer.
+- **Ne jamais** faire de `bluetoothctl remove` sur `<adresse-audio>` : c'est l'appairage audio, le son serait à réappairer.
 - Après chaque test d'écriture, **restaurer** bass=10 / treble=7 / volume=12.
 - Si l'EQ devient muet, l'enceinte s'est endormie (10 min d'inactivité) : la reconnexion doit s'en charger, sinon c'est un bug du watchdog.
 - Garder une référence Python sur le `Gtk.Menu` passé à l'indicateur, sinon le ramasse-miettes le fait disparaître.

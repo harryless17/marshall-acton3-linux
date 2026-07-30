@@ -449,3 +449,228 @@ def paint_knob(cr, cx, cy, radius, fraction, actif=True):
         cr.arc(cx, cy, radius, 0, 2 * math.pi)
         cr.fill()
     cr.restore()
+
+
+KNOB_RADIUS = 24        # r30 laissait trop peu de place au libelle et a la valeur
+KNOB_MARGIN = 6
+
+# Un cran de roulette physique vaut 1.0 sur l'axe de defilement lisse. On
+# accumule les fractions et on ne franchit un cran de valeur qu'a 1.0 atteint :
+# un pave tactile envoie des dizaines de fractions par geste, et un cran de
+# valeur par fraction enverrait le volume a la butee d'un seul effleurement.
+SCROLL_NOTCH = 1.0
+# Tolerance sur la comparaison, et elle n'est pas cosmetique : dix ajouts
+# successifs de 0.1 -- un pave tactile qui envoie un cran en dix fractions --
+# donnent 0.9999999999999999 en binaire, soit STRICTEMENT moins que 1.0. Le
+# cran etait donc avale, puis la fraction suivante amenait le total a exactement
+# 2.0 et en franchissait deux d'un coup. Mesure ici meme, pas une precaution
+# theorique. Un milliardieme de cran d'avance est imperceptible ; perdre un cran
+# puis en sauter deux ne l'est pas.
+SCROLL_EPSILON = 1e-9
+
+
+class Knob(Gtk.DrawingArea):
+    """Une molette rotative. Enveloppe GTK autour d'un KnobModel.
+
+    N'appelle JAMAIS le transport : elle emet value-changed, et le debounce de
+    l'applet ecrit. C'est la regle d'architecture du projet.
+    """
+
+    __gsignals__ = {
+        # l'entier seulement : la cle est portee par l'attribut .key, que
+        # l'appelant a deja sous la main quand il connecte le signal
+        "value-changed": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
+    }
+
+    def __init__(self, key, maximum, travel_px, value=0):
+        super().__init__()
+        self.key = key
+        self._m = KnobModel(maximum=maximum, travel_px=travel_px, value=value)
+        self._y_start = None
+        self._scroll_accu = 0.0
+        self._smooth_time = None
+        self._discrete_time = None
+
+        cote = (KNOB_RADIUS + KNOB_MARGIN) * 2
+        self.set_size_request(cote, cote)
+        self.set_can_focus(True)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
+                        | Gdk.EventMask.BUTTON_RELEASE_MASK
+                        | Gdk.EventMask.POINTER_MOTION_MASK
+                        | Gdk.EventMask.SCROLL_MASK
+                        | Gdk.EventMask.SMOOTH_SCROLL_MASK
+                        | Gdk.EventMask.KEY_PRESS_MASK)
+        self.connect("draw", self._on_draw)
+        self.connect("button-press-event", self._on_press)
+        self.connect("motion-notify-event", self._on_motion)
+        self.connect("button-release-event", self._on_release)
+        self.connect("scroll-event", self._on_scroll)
+        self.connect("key-press-event", self._on_key)
+
+    @property
+    def value(self):
+        return self._m.value
+
+    def _emit_if_changed(self, changed):
+        if changed:
+            self.queue_draw()
+            self.emit("value-changed", self._m.value)
+        return changed
+
+    def step(self, delta):
+        """Un cran. Rend True si la valeur a bouge.
+
+        C'est ICI que le controle de sensibilite porte : step() est appelable
+        depuis le code, ou rien ne filtre. Ceux des gestionnaires d'evenements
+        sont en revanche des ceintures : GTK ne livre aucun evenement d'entree a
+        un widget insensible (verifie -- aucun gestionnaire n'est meme atteint).
+        Ils ne servent qu'aux evenements emis a la main sur le signal, qui
+        court-circuitent la propagation de GTK.
+        """
+        if not self.get_sensitive():
+            return False
+        return self._emit_if_changed(self._m.step(delta))
+
+    def set_value_silently(self, v):
+        """Mise a jour venue de l'enceinte : ne doit PAS emettre, sinon on
+        reflechirait vers le transport ce qu'il vient de nous dire."""
+        if self._m.set_value(v):
+            self.queue_draw()
+
+    def set_maximum_silently(self, maximum):
+        """Le maximum du volume vient du registre 0x08, connu seulement apres
+        lecture de l'etat. La graduation change meme quand la valeur tient."""
+        self._m.set_maximum(maximum)
+        self.queue_draw()
+
+    # Aucune surcharge pour repeindre au changement de sensibilite, et c'est
+    # delibere : GTK 3 met deja la zone du widget a redessiner quand le drapeau
+    # INSENSITIVE bouge (mesure : un seul dessin, identique avec et sans
+    # queue_draw explicite). Surtout, ne pas croire qu'un do_set_sensitive
+    # ferait l'affaire -- set_sensitive() n'est pas une vfunc en GTK 3, donc une
+    # telle surcharge ne serait JAMAIS appelee et passerait pour du code utile.
+
+    def _on_draw(self, _w, cr):
+        alloc = self.get_allocation()
+        rayon = max(6, min(alloc.width, alloc.height) / 2 - KNOB_MARGIN)
+        paint_knob(cr, alloc.width / 2, alloc.height / 2, rayon,
+                   self._m.fraction, actif=self.get_sensitive())
+        if self.has_visible_focus():
+            # Anneau pour le focus clavier seulement. Nuance mesuree : le
+            # drapeau est porte par la FENETRE, pas par le geste. Il est faux
+            # tant que le clavier n'a pas servi -- une session purement souris
+            # n'a donc aucun cerclage -- puis vrai ensuite, y compris apres un
+            # clic. C'est l'heuristique de GTK, la meme que ses widgets natifs.
+            cr.save()
+            cr.set_source_rgba(*GOLD_PIPING, 0.9)
+            cr.set_line_width(2)
+            cr.arc(alloc.width / 2, alloc.height / 2, rayon + 3, 0, 2 * math.pi)
+            cr.stroke()
+            cr.restore()
+        return False
+
+    def _on_press(self, _w, ev):
+        if not self.get_sensitive() or ev.button != 1:
+            return False
+        self.grab_focus()
+        # Glisse RELATIF : on memorise le point d'attache, la valeur ne saute
+        # pas la ou on a clique.
+        self._y_start = ev.y_root
+        self._m.begin_drag()
+        return True
+
+    def _on_motion(self, _w, ev):
+        if self._y_start is None:
+            return False
+        # l'axe y de GTK descend : (depart - courant) est positif vers le haut.
+        # On travaille en coordonnees ECRAN (y_root) et non widget : la course
+        # utile est de 200 px pour une molette de 60, donc le pointeur sort
+        # forcement du widget en cours de geste, et y deviendrait negatif ou
+        # borne. La saisie implicite du bouton continue de nous livrer les
+        # deplacements ; y_root reste juste.
+        self._emit_if_changed(self._m.drag_to(self._y_start - ev.y_root))
+        return True
+
+    def _on_release(self, _w, _ev):
+        self._y_start = None
+        return True
+
+    def _on_scroll(self, _w, ev):
+        """Un cran de molette vaut EXACTEMENT un cran de valeur. C'est ce qui
+        rend la precision non negociable, quel que soit le nombre de crans.
+
+        Deux chemins s'excluent, et il faut les deux : get_scroll_direction()
+        rend son drapeau a False sur un evenement lisse -- en rendant quand
+        meme GDK_SCROLL_UP, valeur par defaut trompeuse qu'on ne doit donc
+        jamais lire sans le drapeau -- et get_scroll_deltas() rend False sur un
+        evenement a crans.
+
+        D'ou la garde d'horodatage. Une souris moderne fait defiler par
+        valuateur (releve sur celle de cette machine : XIScrollClass, increment
+        120 sur l'axe vertical), donc un cran physique arrive en lisse a
+        dy = 1.0, et le serveur X emule EN PLUS un appui de bouton 4/5. Si les
+        deux nous parvenaient, un cran physique en vaudrait deux -- la promesse
+        precisement a ne pas casser. Les deux evenements portent l'horodatage
+        de la meme cause physique : on ecarte donc le jumeau d'un evenement de
+        l'autre nature deja compte. Jamais entre evenements de meme nature, car
+        un pave tactile en envoie legitimement plusieurs par milliseconde. La
+        garde ne peut donc pas avaler un evenement isole : si GDK ne double
+        pas, elle ne se voit pas.
+        """
+        if not self.get_sensitive():
+            return False
+        if ev.is_stop:
+            # fin de geste inertiel : la fraction restante n'ira nulle part
+            self._scroll_accu = 0.0
+            return True
+
+        ok, direction = ev.get_scroll_direction()
+        if ok:
+            if ev.time and ev.time == self._smooth_time:
+                return True         # jumeau emule d'un lisse deja compte
+            self._discrete_time = ev.time
+            # roulette a crans : le systeme a deja quantifie, rien a accumuler
+            self._scroll_accu = 0.0
+            if direction == Gdk.ScrollDirection.UP:
+                self.step(1)
+            elif direction == Gdk.ScrollDirection.DOWN:
+                self.step(-1)
+            else:
+                return False        # horizontal : ce n'est pas notre axe
+            return True
+
+        # defilement lisse (pave tactile, roulette haute resolution) :
+        # dy < 0 = vers le haut
+        _got, _dx, dy = ev.get_scroll_deltas()
+        if dy == 0:
+            return False
+        if ev.time and ev.time == self._discrete_time:
+            return True             # jumeau lisse d'un cran deja compte
+        self._smooth_time = ev.time
+        self._scroll_accu -= dy
+        seuil = SCROLL_NOTCH - SCROLL_EPSILON
+        while self._scroll_accu >= seuil:
+            self._scroll_accu -= SCROLL_NOTCH
+            self.step(1)
+        while self._scroll_accu <= -seuil:
+            self._scroll_accu += SCROLL_NOTCH
+            self.step(-1)
+        return True
+
+    def _on_key(self, _w, ev):
+        if not self.get_sensitive():
+            return False
+        touche = ev.keyval
+        if touche in (Gdk.KEY_Up, Gdk.KEY_Right):
+            self.step(1)
+            return True
+        if touche in (Gdk.KEY_Down, Gdk.KEY_Left):
+            self.step(-1)
+            return True
+        if touche == Gdk.KEY_Home:
+            self._emit_if_changed(self._m.set_value(0))
+            return True
+        if touche == Gdk.KEY_End:
+            self._emit_if_changed(self._m.set_value(self._m.maximum))
+            return True
+        return False

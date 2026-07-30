@@ -99,7 +99,12 @@ class KnobModel:
 # Relevee sur les photos produit : tolex noir legerement bleute, laiton chaud,
 # toile "salt and pepper" gris tres sombre.
 TOLEX = (0.063, 0.063, 0.067)
-CLOTH = (0.086, 0.086, 0.102)
+# La toile n'est pas noire, elle est anthracite. Le nom "salt and pepper" dit
+# exactement ca : des fils clairs ET des fils sombres qui se voient. Sur un fond
+# a 0.086 la passe sombre du tissage ne pouvait plus creuser que de 0.03 alors
+# que la passe claire montait de 0.16, donc un seul des deux sens ressortait et
+# la toile prenait l'air d'un cotele diagonal. A 0.14 les deux ont de la place.
+CLOTH = (0.140, 0.140, 0.157)
 GOLD_PIPING = (0.808, 0.659, 0.235)
 
 # La molette parcourt 280 degres, comme un potentiometre reel : les butees
@@ -204,53 +209,61 @@ def paint_piping(cr, w, h, radius=7):
 
 
 def paint_brass(cr, x, y, w, h, radius=4):
-    """La plaque de laiton qui porte les molettes : degrade chaud, brossage
-    vertical, biseau clair en haut et sombre en bas."""
+    """La plaque de laiton BROSSE qui porte les molettes.
+
+    Trois choix la separent d'une feuille d'or polie, ce qu'elle a longtemps
+    eu l'air d'etre :
+
+    - la plage de valeurs est resserree. Un degrade creme -> or profond etale
+      sur toute la hauteur est un reflet de chrome ; une plaque brossee sous
+      une lumiere diffuse ne fait qu'un ecart de 1.7 entre son point le plus
+      clair et le plus sombre, contre 2.9 dans la version d'avant.
+    - la lumiere est une bande douce vers la moitie de la hauteur, pas une
+      rampe monotone du haut vers le bas.
+    - le brossage suit le grand axe de la plaque, donc horizontal. Sur 390 px
+      de large par 100 de haut, des stries verticales contrarient la forme.
+    """
     cr.save()
     _rounded_path(cr, x, y, w, h, radius)
     cr.clip()
 
-    # Deux reglages tiennent la credibilite de la plaque.
-    #
-    # La teinte : le canal bleu reste autour de 42 % du rouge. En dessous (0.13
-    # sur le ton median, premiere version) la plaque part dans le jaune
-    # surligneur -- sur 390 px de large par 100 de haut, cette teinte occupe
-    # trop de surface pour passer. Le laiton reel est un or grise.
-    #
-    # Le placement de la lumiere : le maximum de clarte est a 10 % de la
-    # hauteur, pas sur l'arete. Au sommet il s'ajoutait au biseau blanc et
-    # l'arete ressortait delavee ; decale vers le bas, il se detache du biseau
-    # et se lit comme du metal qui prend le jour.
+    # Canal bleu autour de 51 % du rouge. A 42 % la plaque restait un or vif ;
+    # le laiton vieilli d'un panneau de commande est nettement plus grise et
+    # plus sombre que l'or neuf.
     g = cairo.LinearGradient(0, y, 0, y + h)
-    for pos, rgb in ((0.00, (0.831, 0.784, 0.639)),
-                     (0.10, (0.898, 0.851, 0.706)),
-                     (0.34, (0.796, 0.702, 0.404)),
-                     (0.60, (0.678, 0.569, 0.286)),
-                     (0.82, (0.506, 0.416, 0.204)),
-                     (1.00, (0.353, 0.286, 0.137))):
+    for pos, rgb in ((0.00, (0.463, 0.396, 0.235)),
+                     (0.16, (0.561, 0.482, 0.286)),
+                     (0.46, (0.667, 0.580, 0.361)),
+                     (0.58, (0.655, 0.569, 0.353)),
+                     (0.84, (0.494, 0.420, 0.259)),
+                     (1.00, (0.392, 0.329, 0.200))):
         g.add_color_stop_rgb(pos, *rgb)
     cr.set_source(g)
     cr.paint()
 
-    # Brossage : traits clairs et sombres alternes au pas de 2 px. Une seule
-    # serie claire au pas de 3 px laissait deux colonnes vides entre chaque
-    # trait, ce qui se lit comme du velours cotele et non comme du metal brosse.
+    # Brossage : traits clairs et sombres alternes au pas de 2 px, donc une
+    # ligne sur deux de chaque teinte et aucune ligne vierge. Une seule serie
+    # claire au pas de 3 px laissait deux lignes vides entre chaque trait, ce
+    # qui se lit comme du velours cotele et non comme du metal brosse.
     cr.set_line_width(1)
-    for phase, rgba in ((0.5, (1, 1, 1, 0.075)), (1.5, (0, 0, 0, 0.065))):
+    for phase, rgba in ((0.5, (1, 1, 1, 0.065)), (1.5, (0, 0, 0, 0.055))):
         cr.set_source_rgba(*rgba)
-        xi = x + phase
-        while xi < x + w:
-            cr.move_to(xi, y)
-            cr.line_to(xi, y + h)
-            xi += 2
+        yi = y + phase
+        while yi < y + h:
+            cr.move_to(x, yi)
+            cr.line_to(x + w, yi)
+            yi += 2
         cr.stroke()
 
-    cr.set_line_width(1)                     # biseau
-    cr.set_source_rgba(1, 1, 1, 0.55)
+    # Biseau volontairement sourd. Un filet quasi blanc sur une arete deja
+    # pale etait le principal responsable de l'effet feuille polie ; ici le
+    # degrade repart du sombre en haut, et 0.22 suffit a marquer l'arete.
+    cr.set_line_width(1)
+    cr.set_source_rgba(1, 0.980, 0.925, 0.22)
     cr.move_to(x, y + 0.5)
     cr.line_to(x + w, y + 0.5)
     cr.stroke()
-    cr.set_source_rgba(0, 0, 0, 0.45)
+    cr.set_source_rgba(0, 0, 0, 0.38)
     cr.move_to(x, y + h - 0.5)
     cr.line_to(x + w, y + h - 0.5)
     cr.stroke()
@@ -265,21 +278,35 @@ def paint_grille(cr, x, y, w, h, radius=3):
     cr.set_source_rgb(*CLOTH)
     cr.paint()
 
-    # Les deux sens doivent peser a peu pres pareil : c'est le croisement des
-    # deux trames qui fait le "salt and pepper". A 0.55 (valeur d'origine) la
-    # passe sombre ecrasait la claire et il ne restait qu'un gris raye.
-    _hatch(cr, x, y, w, h, 3, (0.886, 0.839, 0.698, 0.10), True)
-    _hatch(cr, x, y, w, h, 3, (0, 0, 0, 0.30), False)
+    # Le tissage doit se voir a 1:1, sans loupe : c'est une bonne part de ce
+    # qui rend une facade Marshall reconnaissable. Deux corrections pour ca.
+    #
+    # Le pas passe de 3 a 4 px. A 3 px, un fil clair et un fil sombre pour
+    # deux pixels de fond : les trois se moyennent a l'oeil et il ne reste
+    # qu'un aplati. A 4 px chaque maille garde du fond entre ses fils, donc
+    # la maille elle-meme devient l'unite visible.
+    #
+    # Les deux opacites sont appariees a l'oeil, sur une planche d'essai, et pas
+    # calculees : ce qui compte est que les deux sens pesent PAREIL, sinon le
+    # sens dominant se lit comme une rayure diagonale au lieu d'un tissu. Le
+    # noir part avec un handicap -- sur un fond deja sombre il a moins de marge
+    # que le clair -- d'ou 0.45 contre 0.16 et non deux valeurs voisines.
+    _hatch(cr, x, y, w, h, 4, (0.886, 0.839, 0.698, 0.16), True)
+    _hatch(cr, x, y, w, h, 4, (0, 0, 0, 0.45), False)
 
     # Ombre interne, en deux temps. Le voile radial seul devait monter tres haut
     # en opacite pour creuser les bords, et il noircissait alors le centre au
     # point d'y noyer le logo. On separe donc les deux roles : voile radial
     # doux pour la mise en volume, liseres sombres colles au bord pour le creux.
+    #
+    # 0.45 et non 0.55 : le voile est justement ce qui efface le tissage, il
+    # tire tout vers le noir, fils clairs compris. Le creux perdu au bord est
+    # rendu par les liseres juste en dessous, qui eux n'ecrasent que 5 px.
     cx, cy = x + w / 2, y + h / 2
     shade = cairo.RadialGradient(cx, cy, min(w, h) * 0.20,
                                  cx, cy, max(w, h) * 0.72)
     shade.add_color_stop_rgba(0, 0, 0, 0, 0.0)
-    shade.add_color_stop_rgba(1, 0, 0, 0, 0.55)
+    shade.add_color_stop_rgba(1, 0, 0, 0, 0.45)
     cr.set_source(shade)
     cr.paint()
 

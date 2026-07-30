@@ -10,6 +10,7 @@ import importlib.util
 import logging
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -232,6 +233,67 @@ class TestReglagesInconnus(AppletTestCase):
         app = self.faire_applet(spk)
         app._apply({"pouet": 3})             # ne doit pas lever AttributeError
         self.assertEqual(spk.ecritures, [])
+
+
+class TestAutostart(AppletTestCase):
+    """L'interrupteur de la fenetre pose ou retire le fichier d'autostart.
+
+    Le fichier est la SEULE source de verite : il peut avoir ete retire a la
+    main entre deux ouvertures de la fenetre.
+    """
+
+    def setUp(self):
+        self.rep = tempfile.TemporaryDirectory()
+        self.ancien = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = self.rep.name
+
+    def tearDown(self):
+        if self.ancien is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self.ancien
+        self.rep.cleanup()
+
+    def test_desactive_par_defaut_quand_le_fichier_manque(self):
+        self.assertFalse(self.mod.autostart_enabled())
+
+    def test_activer_cree_le_fichier(self):
+        self.mod.set_autostart(True)
+        self.assertTrue(self.mod.autostart_enabled())
+        contenu = open(self.mod.autostart_path()).read()
+        self.assertIn("[Desktop Entry]", contenu)
+        self.assertIn("Type=Application", contenu)
+        self.assertIn("Exec=", contenu)
+
+    def test_lexec_pointe_sur_un_chemin_absolu(self):
+        self.mod.set_autostart(True)
+        ligne = [l for l in open(self.mod.autostart_path())
+                 if l.startswith("Exec=")][0]
+        chemin = ligne.split("=", 1)[1].strip()
+        self.assertTrue(chemin.startswith("/"), f"Exec relatif : {chemin}")
+        self.assertTrue(chemin.endswith("marshall-applet"))
+
+    def test_desactiver_retire_le_fichier(self):
+        self.mod.set_autostart(True)
+        self.mod.set_autostart(False)
+        self.assertFalse(os.path.exists(self.mod.autostart_path()))
+
+    def test_desactiver_deux_fois_ne_leve_pas(self):
+        self.mod.set_autostart(False)
+        self.mod.set_autostart(False)     # le fichier n'a jamais existe
+        self.assertFalse(self.mod.autostart_enabled())
+
+    def test_activer_deux_fois_est_idempotent(self):
+        self.mod.set_autostart(True)
+        premier = open(self.mod.autostart_path()).read()
+        self.mod.set_autostart(True)
+        self.assertEqual(open(self.mod.autostart_path()).read(), premier)
+
+    def test_le_chemin_suit_xdg_config_home(self):
+        self.assertTrue(
+            self.mod.autostart_path().startswith(self.rep.name),
+            "autostart_path ignore XDG_CONFIG_HOME, donc le test polluerait "
+            "le vrai ~/.config")
 
 
 if __name__ == "__main__":

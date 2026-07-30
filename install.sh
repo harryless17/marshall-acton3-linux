@@ -19,6 +19,10 @@ ln -sf "$SRC/marshall-ctl"    "$BIN/marshall-ctl"
 # Entree du lanceur d'applications : c'est elle qui rend l'applet trouvable en
 # tapant "marshall" (ou "enceinte", "bass"...) dans la recherche GNOME.
 # Les Keywords sont indexes par la recherche, pas seulement le Name.
+#
+# ATTENTION : ce contenu est duplique dans AUTOSTART_DESKTOP, en tete de
+# marshall-applet -- l'interrupteur "Demarrer avec la session" de la fenetre
+# reecrit ce meme fichier. Si tu touches a l'un, touche a l'autre.
 write_desktop() {
     cat > "$1" <<EOF
 [Desktop Entry]

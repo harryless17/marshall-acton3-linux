@@ -87,6 +87,69 @@ def _setup_log():
 log = _setup_log()
 
 
+# -- autostart ------------------------------------------------------------
+# Le meme fichier que celui pose par install.sh. Son CONTENU est donc duplique
+# entre le shell et ici : six lignes d'ini, duplication assumee et signalee des
+# deux cotes. Si tu touches a l'un, touche a l'autre.
+AUTOSTART_DESKTOP = """[Desktop Entry]
+Type=Application
+Name=Marshall Acton III
+GenericName=Egaliseur d'enceinte
+Comment=Reglage du volume, du bass et du treble de l'enceinte Marshall
+Exec={exec}
+Icon=audio-speakers
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=marshall;acton;enceinte;speaker;bass;basses;treble;aigus;egaliseur;equalizer;volume;son;audio;bluetooth;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+"""
+
+
+def applet_exec_path():
+    """Chemin a mettre dans Exec=.
+
+    Le lien pose par install.sh d'abord : c'est lui qui survit a un
+    deplacement du depot. Repli sur le script reel pour un lancement direct
+    depuis le depot, sans installation.
+    """
+    lien = os.path.expanduser("~/bin/marshall-applet")
+    return lien if os.path.exists(lien) else os.path.realpath(__file__)
+
+
+def autostart_path():
+    """Lu a chaque appel, et non mis en cache : les tests deplacent
+    XDG_CONFIG_HOME, et le vrai ~/.config ne doit pas etre touche."""
+    base = os.environ.get("XDG_CONFIG_HOME",
+                          os.path.expanduser("~/.config"))
+    return os.path.join(base, "autostart", "marshall-applet.desktop")
+
+
+def autostart_enabled():
+    """La presence du fichier EST l'etat. Pas de memorisation en parallele :
+    il peut avoir ete retire a la main."""
+    return os.path.exists(autostart_path())
+
+
+def set_autostart(actif):
+    """Pose ou retire le fichier d'autostart.
+
+    Retirer, plutot que poser X-GNOME-Autostart-enabled=false : c'est deja ce
+    que le README documente pour la desinstallation, et ca evite deux
+    representations du meme etat.
+    """
+    chemin = autostart_path()
+    if actif:
+        os.makedirs(os.path.dirname(chemin), exist_ok=True)
+        with open(chemin, "w") as f:
+            f.write(AUTOSTART_DESKTOP.format(exec=applet_exec_path()))
+    else:
+        try:
+            os.remove(chemin)
+        except FileNotFoundError:
+            pass
+
+
 class SettingsWindow(Gtk.Window):
     """Fenetre de reglage fin. Cachee et non detruite a la fermeture, pour que
     l'applet continue de vivre dans la barre."""

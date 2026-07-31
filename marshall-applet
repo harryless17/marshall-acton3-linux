@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from marshall_ble import (
     PRESETS, Speaker, match_preset, BASS_MAX, TREBLE_MAX, VOLUME_MAX_FALLBACK,
 )
+from marshall_ui import Facade, WINDOW_WIDTH, WINDOW_HEIGHT
 
 APP_ID = "io.github.harryless17.MarshallApplet"
 ICON_OK = "audio-speakers"
@@ -150,138 +151,61 @@ def set_autostart(actif):
             pass
 
 
-class SettingsWindow(Gtk.Window):
-    """Fenetre de reglage fin. Cachee et non detruite a la fermeture, pour que
-    l'applet continue de vivre dans la barre."""
+class SpeakerWindow(Gtk.Window):
+    """La facade. Cachee et non detruite a la fermeture, pour que l'applet
+    continue de vivre dans la barre.
 
-    # Le max du volume vient de l'enceinte (registre 0x08) et non d'une
-    # constante : il est ajuste par update() des que l'etat est connu.
-    RANGES = (("volume", VOLUME_MAX_FALLBACK),
-              ("bass", BASS_MAX), ("treble", TREBLE_MAX))
+    Ne contient aucune logique : elle relie les signaux de la Facade aux
+    methodes de l'applet. Tout ce qui est delicat est soit dans marshall_ui
+    (le dessin, l'arithmetique), soit dans Applet (le debounce, le transport).
+    """
 
     def __init__(self, app):
         super().__init__(title="Marshall Acton III")
         self.app = app
-        self.set_default_size(380, 220)
-        self.set_border_width(16)
+        self.set_default_size(WINDOW_WIDTH, WINDOW_HEIGHT)
         self.set_resizable(False)
-        # True des maintenant : la construction des sliders peut emettre
-        # "value-changed", ce qui declencherait des ecritures parasites vers
-        # l'enceinte avant meme d'avoir lu son etat. Remis a False en fin
-        # de __init__.
-        self._loading = True
 
-        grid = Gtk.Grid(row_spacing=8, column_spacing=14)
-        self.add(grid)
+        self.facade = Facade(PRESETS, {"volume": VOLUME_MAX_FALLBACK,
+                                       "bass": BASS_MAX,
+                                       "treble": TREBLE_MAX})
+        self.add(self.facade)
 
-        self.scales = {}
-        for row, (key, top) in enumerate(self.RANGES):
-            lbl = Gtk.Label(label=key.capitalize(), xalign=0)
-            sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, top, 1)
-            sc.set_hexpand(True)
-            sc.set_digits(0)
-            sc.set_value_pos(Gtk.PositionType.RIGHT)
-            # 6 marques reparties bornes incluses : top // 5 laissait la
-            # derniere marque en deca du maximum (0/6/12/18/24/30 pour 31).
-            for i in range(6):
-                sc.add_mark(round(top * i / 5), Gtk.PositionType.BOTTOM, None)
-            sc.connect("value-changed", self.on_scale, key)
-            grid.attach(lbl, 0, row, 1, 1)
-            grid.attach(sc, 1, row, 1, 1)
-            self.scales[key] = sc
-
-        box = Gtk.Box(spacing=6, homogeneous=True)
-        for name in PRESETS:
-            b = Gtk.Button(label=name)
-            b.connect("clicked", lambda _w, n=name: self.app.apply_preset(n))
-            box.add(b)
-        grid.attach(box, 0, len(self.RANGES), 2, 1)
-
-        # La zone d'etat devient un BOUTON quand le lien est tombe : sur GNOME
-        # 46 le clic droit sur l'icone ne sort aucun menu, donc l'entree
-        # "Reconnecter" du menu est inatteignable -- enceinte eteinte signifiait
-        # applet muet jusqu'au relogin.
-        self.status = Gtk.Button(label="")
-        self.status.set_relief(Gtk.ReliefStyle.NONE)
-        self.status.connect("clicked", self.on_reconnect)
-        grid.attach(self.status, 0, len(self.RANGES) + 1, 2, 1)
-
-        pied = Gtk.Box(spacing=8)
-        self.autostart = Gtk.Switch()
-        self.autostart.set_active(autostart_enabled())
-        self.autostart.connect("notify::active", self.on_autostart)
-        pied.add(self.autostart)
-        pied.add(Gtk.Label(label="Démarrer avec la session", xalign=0))
-        quitter = Gtk.Button(label="Quitter")
-        quitter.connect("clicked", lambda _w: self.app.on_quit())
-        pied.pack_end(quitter, False, False, 0)
-        grid.attach(pied, 0, len(self.RANGES) + 2, 2, 1)
-
+        self.facade.connect("knob-changed", self._on_knob)
+        self.facade.connect("preset-chosen",
+                            lambda _f, nom: self.app.apply_preset(nom))
+        self.facade.connect("reconnect-requested", self._on_reconnect)
+        self.facade.connect("autostart-toggled",
+                            lambda _f, actif: set_autostart(actif))
+        self.facade.connect("quit-requested", lambda _f: self.app.on_quit())
         self.connect("delete-event", self.on_close)
-        self._loading = False        # construction finie, les gestes comptent
-
-    def _retop_volume(self, top):
-        """Aligne l'echelle de volume sur le maximum annonce par l'enceinte."""
-        sc = self.scales["volume"]
-        sc.get_adjustment().set_upper(top)
-        sc.clear_marks()
-        for i in range(6):
-            sc.add_mark(round(top * i / 5), Gtk.PositionType.BOTTOM, None)
 
     def on_close(self, *_a):
         self.hide()
         return True                  # cacher, pas detruire
 
-    def update(self, state, connected):
-        """Mise a jour programmee : ne doit PAS declencher d'ecriture."""
-        precedent = self._loading      # restaurer, pas forcer a False
-        self._loading = True
-        try:
-            if state:
-                top = state.get("max_volume")
-                if top and self.scales["volume"].get_adjustment().get_upper() != top:
-                    self._retop_volume(top)
-                for key, sc in self.scales.items():
-                    # ne pas ecraser une valeur que l'utilisateur vient de poser
-                    # et dont l'envoi est encore en attente : la poignee
-                    # sauterait en arriere sous son doigt
-                    if key in self.app._pending:
-                        continue
-                    if key in state and sc.get_value() != state[key]:
-                        sc.set_value(state[key])
-            self.status.set_label("● connectée" if connected
-                                  else "○ déconnectée — reconnecter")
-            # Toujours sensible. Griser quand tout va bien affichait l'etat
-            # normal comme un controle desactive, ce qui se lit comme une
-            # panne. C'est le libelle qui porte l'etat ; le clic est simplement
-            # sans effet une fois connecte (cf. on_reconnect).
-            # relu a chaque update : le fichier peut avoir bouge a la main
-            self.autostart.set_active(autostart_enabled())
-            for sc in self.scales.values():
-                sc.set_sensitive(bool(connected))
-        finally:
-            self._loading = precedent
+    def _on_knob(self, _facade, key, valeur):
+        """Passe par le debounce, JAMAIS directement au transport : c'est la
+        regle d'architecture en tete de ce fichier."""
+        self.app.schedule_write(key, valeur)
 
-    def on_scale(self, scale, key):
-        if self._loading:
-            return
-        self.app.schedule_write(key, int(scale.get_value()))
-
-    def on_reconnect(self, _w):
-        """Ne fait rien quand le lien est deja la : le bouton n'est actif que
-        deconnecte, mais un double-clic rapide pourrait passer avant l'update.
-        """
+    def _on_reconnect(self, _facade):
+        """idle_add : connect() est synchrone et bloque la boucle GLib jusqu'a
+        30 s. L'appeler depuis le handler gelerait l'interface avant meme que
+        le clic soit rendu."""
         if not self.app._connected():
             GLib.idle_add(self.app._initial_connect)
 
-    def on_autostart(self, switch, _param):
-        """set_active() dans update() reemet "notify::active" : sans ce garde,
-        chaque rafraichissement reecrirait le fichier -- jusqu'a ~8 fois par
-        seconde quand la molette physique tourne.
+    def update(self, state, connected):
+        """Meme signature qu'avant : _do_refresh n'a pas a changer.
+
+        _pending est passe explicitement a la Facade -- marshall_ui ne doit pas
+        connaitre l'applet.
         """
-        if self._loading:
-            return
-        set_autostart(switch.get_active())
+        self.facade.update(
+            state, connected, self.app._pending,
+            match_preset(state["bass"], state["treble"]) if connected else None,
+            autostart_enabled())
 
 
 class Applet(Gtk.Application):
@@ -513,7 +437,7 @@ class Applet(Gtk.Application):
 
     def on_settings(self, _w):
         if self.win is None:
-            self.win = SettingsWindow(self)
+            self.win = SpeakerWindow(self)
         self.win.update(self.state, self._connected())
         self.win.show_all()
         self.win.present()

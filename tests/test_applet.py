@@ -21,6 +21,11 @@ from gi.repository import Gtk  # noqa: E402
 
 RACINE = os.path.join(os.path.dirname(__file__), "..")
 
+# Construire la fenetre demande un Gdk.Display : les tests qui en fabriquent une
+# sont sautes sans afficheur, comme dans test_knob_widget.py. Toute la logique
+# testee ici hors fenetre reste couverte sans ecran.
+AFFICHEUR = Gtk.init_check([])[0]
+
 _MODULE = None
 
 
@@ -238,6 +243,50 @@ class TestReglagesInconnus(AppletTestCase):
         app = self.faire_applet(spk)
         app._apply({"pouet": 3})             # ne doit pas lever AttributeError
         self.assertEqual(spk.ecritures, [])
+
+
+@unittest.skipUnless(AFFICHEUR, "aucun Gdk.Display : fenetre GTK inconstructible")
+class TestFenetreEtatIncomplet(AppletTestCase):
+    """La fenetre doit encaisser un etat absent ou partiel.
+
+    _do_refresh appelle self.win.update(self.state, connected) sans condition,
+    et self.state vaut None jusqu'a la premiere lecture reussie -- une enceinte
+    eteinte a l'ouverture de session suffit. C'est la forme exacte du bug qui a
+    deja mordu ce projet : un etat partiel levait KeyError a chaque
+    rafraichissement, en boucle, et figeait l'applet pour de bon.
+    """
+
+    def faire_fenetre(self, app):
+        w = self.mod.SpeakerWindow(app)
+        self.addCleanup(w.destroy)
+        return w
+
+    def test_update_avec_etat_none_ne_leve_pas(self):
+        app = self.faire_applet(state=None)
+        self.faire_fenetre(app).update(None, False)
+
+    def test_update_avec_etat_partiel_ne_leve_pas(self):
+        """Ce que le module a deja livre : un dict sans 'volume'."""
+        partiel = {"bass": 8, "treble": 6, "max_volume": 31}
+        app = self.faire_applet(state=partiel)
+        self.assertFalse(app._connected())     # donc connected=False
+        self.faire_fenetre(app).update(partiel, False)
+
+    def test_update_avec_etat_complet_ne_leve_pas(self):
+        app = self.faire_applet()
+        self.faire_fenetre(app).update(app.state, True)
+
+    def test_update_nemet_aucune_ecriture(self):
+        """Refleter l'etat de l'enceinte ne doit pas reecrire vers l'enceinte.
+        Sans le garde _loading de la Facade, poser la valeur d'une molette
+        emettrait "knob-changed", donc un schedule_write, donc une ecriture --
+        une boucle infernale a chaque notification de molette physique.
+        """
+        spk = FauxSpeaker()
+        app = self.faire_applet(spk)
+        self.faire_fenetre(app).update(app.state, True)
+        self.assertEqual(spk.ecritures, [])
+        self.assertEqual(app._pending, {})
 
 
 class TestAutostart(AppletTestCase):

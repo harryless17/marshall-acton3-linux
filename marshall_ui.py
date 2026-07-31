@@ -661,14 +661,61 @@ def install_icon_theme(base=None):
     return ecrits
 
 
-def paint_knob(cr, cx, cy, radius, fraction, actif=True):
-    """Une molette doree moletee, tournee selon fraction (0..1).
+# -- la molette, DEUX TONS -------------------------------------------------
+# La commande reelle n'est pas une bille doree : c'est un CORPS conique presque
+# noir, molete sur son flanc, coiffe d'un CAPUCHON de laiton brosse TOURNE en
+# cercles concentriques, et le repere est une ligne sombre gravee sur ce
+# capuchon. Le dome dore integral de la version d'avant se lisait ; il se lisait
+# comme un bouton de table de mixage, pas comme une molette d'ampli.
+#
+# Rayon du capuchon, en fraction du rayon du corps. C'est LE reglage de la
+# piece, compare a 1:1 sur planche a 0.62, 0.66, 0.68, 0.72 et 0.74 : le flanc
+# molete mesure (1 - KNOB_CAP) * R, soit 9,0 px a r28. A 0.74 il tombe a 7,3 px
+# et l'anneau noir -- la signature de la molette, ce qui la distingue d'une
+# piece de laiton massif -- s'amincit au point de passer pour un simple contour ;
+# a 0.62 il monte a 10,6 px et c'est le capuchon qui n'a plus la place de porter
+# a la fois le tournage et le repere.
+KNOB_CAP = 0.68
+# Rampe du CORPS : presque noir, mais CHAUD -- meme famille que TICK_DARK, pour
+# la meme raison. Un noir neutre au milieu d'un decor entierement chaud se lit
+# comme un trou dans l'image. Le point chaud est decale en haut a gauche, comme
+# partout sur cette facade, et il monte jusqu'a 0.24 : c'est le flanc d'un cone
+# vu de dessus, il prend la lumiere sur sa moitie eclairee.
+KNOB_BODY = ((0.00, (0.243, 0.216, 0.180)),
+             (0.38, (0.145, 0.126, 0.098)),
+             (0.72, (0.086, 0.072, 0.055)),
+             (1.00, (0.031, 0.025, 0.020)))
+# Rampe du CAPUCHON, volontairement PLATE au milieu et qui ne plonge qu'au bord.
+# Une rampe a la maniere de l'ancien dome -- clair au point chaud, sombre des
+# 0.5 R -- donnait une bille bombee : le capuchon reel est un disque a peine
+# galbe. Verifie en x6 sur planche : avec la rampe plate le tournage se voit sur
+# les deux tiers du disque, avec la rampe bombee il est avale par le degrade.
+KNOB_CAP_RAMP = ((0.00, (0.941, 0.894, 0.749)),
+                 (0.50, (0.878, 0.784, 0.522)),
+                 (0.82, (0.769, 0.643, 0.349)),
+                 (1.00, (0.494, 0.396, 0.192)))
+# Periode du tournage, en pixels : un cercle clair et un cercle sombre. Compare
+# en x6 a 1.8, 2.4 et 2.8, puis a 1:1 -- a 1.8 les anneaux se moyennent et le
+# capuchon retombe a un degrade lisse, a 2.8 ils se comptent et le disque prend
+# l'air d'une cible. 2.4 est le pas ou la texture se voit sans se compter.
+# En PIXELS et non en fraction du rayon : c'est un etat de surface, il ne
+# grandit pas avec la piece.
+KNOB_TURN_STEP = 2.4
 
-    Le dome et le reflet ne tournent PAS -- seuls le moletage et le repere le
-    font. C'est ce qui donne l'illusion d'un objet eclaire par le haut qu'on
-    fait pivoter, plutot que d'une image qu'on fait tourner.
+
+def paint_knob(cr, cx, cy, radius, fraction, actif=True):
+    """Une molette deux tons, tournee selon fraction (0..1).
+
+    `radius` est le rayon du CORPS, pas du capuchon : paint_knob_ticks et
+    Knob._on_draw se placent tous les deux dessus.
+
+    Le degrade du corps, celui du capuchon et le voile de lumiere ne tournent
+    PAS -- seuls le moletage et le repere le font. C'est ce qui donne l'illusion
+    d'un objet eclaire par le haut qu'on fait pivoter, plutot que d'une image
+    qu'on fait tourner.
     """
     angle = ANGLE_MIN + (ANGLE_MAX - ANGLE_MIN) * max(0.0, min(1.0, fraction))
+    cap_r = radius * KNOB_CAP
     cr.save()
 
     # Ombre portee degradee. Un disque noir plein simplement decale ne laissait
@@ -682,61 +729,117 @@ def paint_knob(cr, cx, cy, radius, fraction, actif=True):
     cr.arc(cx, sy, radius * 1.16, 0, 2 * math.pi)
     cr.fill()
 
-    # Meme famille de laiton que la plaque, un cran plus clair pour que la
-    # molette se detache du support. Le point chaud demarre a 0.10 R et non a
-    # 0.05 : plus resserre, il donnait une bille de plastique vernie.
-    dome = cairo.RadialGradient(cx - radius * 0.28, cy - radius * 0.34,
-                                max(0.5, radius * 0.10), cx, cy, radius)
-    for pos, rgb in ((0.00, (0.980, 0.949, 0.831)),
-                     (0.16, (0.898, 0.808, 0.510)),
-                     (0.46, (0.776, 0.635, 0.259)),
-                     (0.78, (0.545, 0.443, 0.180)),
-                     (1.00, (0.298, 0.239, 0.110))):
-        dome.add_color_stop_rgb(pos, *rgb)
-    cr.set_source(dome)
+    # Le corps occupe TOUT le rayon : le capuchon se pose dessus ensuite, donc
+    # l'anneau molete est ce qui reste visible du corps.
+    body = cairo.RadialGradient(cx - radius * 0.42, cy - radius * 0.48,
+                                max(0.5, radius * 0.10), cx, cy, radius * 1.04)
+    for pos, rgb in KNOB_BODY:
+        body.add_color_stop_rgb(pos, *rgb)
+    cr.set_source(body)
     cr.arc(cx, cy, radius, 0, 2 * math.pi)
     cr.fill()
 
-    cr.save()                                 # moletage + repere : ca tourne
+    cr.save()                            # moletage : ca tourne avec la valeur
     cr.translate(cx, cy)
     cr.rotate(angle)
-    cr.set_line_width(max(0.8, radius * 0.04))
-    # Le nombre de dents suit le rayon, sinon les deux extremes ratent : 48
+    # Le nombre de dents suit le rayon, sinon les deux extremes ratent : 42
     # dents sur un rayon de 4 px, ca fait un demi-pixel d'arc par dent, donc une
-    # bouillie grise. Le facteur 1.4 donne ~2.7 px d'arc par dent, soit un
-    # trait plus un vide -- la limite en dessous de laquelle ca ne se lit plus.
-    teeth = max(10, min(44, int(radius * 1.4)))
+    # bouillie grise. Le facteur 1.5 donne 42 dents a r28, soit un pas de 4,4 px
+    # d'arc au milieu du flanc -- la place d'un creux ET d'une crete, ce qu'il
+    # faut pour lire un moletage et non des rayons de roue.
+    teeth = max(8, min(46, int(radius * 1.5)))
+    cr.set_line_width(max(0.7, radius * 0.028))
+    r0, r1 = cap_r * 1.01, radius * 0.985
     for i in range(teeth):
         a = 2 * math.pi * i / teeth
-        cr.set_source_rgba(*((1, 1, 1, 0.26) if i % 2 else (0, 0, 0, 0.34)))
-        # Bande courte, collee au bord : de 0.78 a 0.98 R les dents faisaient
-        # un cinquieme du rayon et la molette prenait l'air d'un pignon.
-        cr.move_to(radius * 0.86 * math.cos(a), radius * 0.86 * math.sin(a))
-        cr.line_to(radius * 0.98 * math.cos(a), radius * 0.98 * math.sin(a))
-        cr.stroke()
-
-    # Repere : ame sombre cerclee de creme. Le dome est clair en haut a gauche
-    # et sombre en bas a droite, et le repere balaye les deux ; une seule
-    # couleur disparaitrait forcement a une butee ou a l'autre. Avec le contour,
-    # c'est l'ame qui porte sur le clair et le halo qui porte sur le sombre.
-    cr.set_line_cap(cairo.LINE_CAP_ROUND)
-    for width, rgba in ((max(2.4, radius * 0.17), (1, 0.976, 0.898, 0.80)),
-                        (max(1.2, radius * 0.085), (0.129, 0.102, 0.016, 1))):
-        cr.set_source_rgba(*rgba)
-        cr.set_line_width(width)
-        cr.move_to(0, -radius * 0.84)
-        cr.line_to(0, -radius * 0.36)
-        cr.stroke()
+        # Le creux sombre PUIS la crete claire, decalee d'un demi-pas. Une seule
+        # serie ne donne que des rayures gravees, comme le brossage de
+        # paint_brass ou le moletage du levier : il faut les deux.
+        for aa, rgba in ((a, (0, 0, 0, 0.48)),
+                         (a + math.pi / teeth, (1, 0.945, 0.855, 0.16))):
+            cr.set_source_rgba(*rgba)
+            cr.move_to(r0 * math.cos(aa), r0 * math.sin(aa))
+            cr.line_to(r1 * math.cos(aa), r1 * math.sin(aa))
+            cr.stroke()
     cr.restore()
 
-    # Reflet fixe : il passe APRES le moletage, donc il le glace. A 0.28 il
-    # delavait aussi le haut du repere ; 0.18 suffit a poser la lumiere.
-    reflect = cairo.LinearGradient(0, cy - radius, 0, cy)
-    reflect.add_color_stop_rgba(0, 1, 1, 1, 0.18)
-    reflect.add_color_stop_rgba(1, 1, 1, 1, 0.0)
-    cr.set_source(reflect)
-    cr.arc(cx, cy, radius * 0.97, 0, 2 * math.pi)
+    # Arete du corps : le moletage s'arrete a 0.985 R, ce filet ferme la piece.
+    # Sans lui les dents claires touchent le bord et la silhouette s'effiloche.
+    cr.set_line_width(1.0)
+    cr.set_source_rgba(0, 0, 0, 0.55)
+    cr.arc(cx, cy, radius - 0.5, 0, 2 * math.pi)
+    cr.stroke()
+
+    disc = cairo.RadialGradient(cx - cap_r * 0.34, cy - cap_r * 0.40,
+                                max(0.5, cap_r * 0.10), cx, cy, cap_r)
+    for pos, rgb in KNOB_CAP_RAMP:
+        disc.add_color_stop_rgb(pos, *rgb)
+    cr.set_source(disc)
+    cr.arc(cx, cy, cap_r, 0, 2 * math.pi)
     cr.fill()
+
+    # Le TOURNAGE : des cercles concentriques, pas un degrade. C'est l'etat de
+    # surface reel d'une piece passee au tour, et c'est ce qui separe un
+    # capuchon de metal d'une pastille de plastique -- verifie en retirant les
+    # anneaux sur planche, le disque redevient aussitot une bille vernie.
+    cr.save()
+    cr.arc(cx, cy, cap_r, 0, 2 * math.pi)
+    cr.clip()
+    cr.set_line_width(1.0)
+    rr = cap_r - 0.6
+    clair = True
+    # On s'arrete a 2 px : en dessous, les cercles font moins de 13 px de
+    # circonference et se rendent en une bouillie de pixels a moitie couverts au
+    # centre exact du capuchon, pile ou le repere prend son origine.
+    while rr > 2.0:
+        cr.set_source_rgba(*((1, 1, 1, 0.12) if clair else (0, 0, 0, 0.14)))
+        cr.arc(cx, cy, rr, 0, 2 * math.pi)
+        cr.stroke()
+        rr -= KNOB_TURN_STEP / 2.0
+        clair = not clair
+
+    # Voile de lumiere FIXE, ecrete au capuchon, pose APRES le tournage donc il
+    # le glace -- meme role que l'ancien reflet du dome. Il ne tourne pas : la
+    # lumiere de la piece vient de la fenetre, pas de la valeur.
+    voile = cairo.LinearGradient(0, cy - cap_r, 0, cy + cap_r * 0.3)
+    voile.add_color_stop_rgba(0, 1, 1, 1, 0.14)
+    voile.add_color_stop_rgba(1, 1, 1, 1, 0.0)
+    cr.set_source(voile)
+    cr.paint()
+    cr.restore()
+
+    # Ce qui pose le capuchon SUR le corps plutot que dedans : son ombre de
+    # contact tout autour, et son arete eclairee du cote de la lumiere. Le
+    # premier filet est trace juste DEHORS, sur le pied des dents ; le second
+    # juste DEDANS, en haut a gauche, sur 160 degres seulement -- un filet clair
+    # tout autour ferait un anneau, donc une piece rapportee et non un relief.
+    cr.set_line_width(1.4)
+    cr.set_source_rgba(0, 0, 0, 0.45)
+    cr.arc(cx, cy, cap_r + 0.5, 0, 2 * math.pi)
+    cr.stroke()
+    cr.set_line_width(1.0)
+    cr.set_source_rgba(1, 0.976, 0.918, 0.42)
+    cr.arc(cx, cy, cap_r - 0.6, math.radians(160), math.radians(320))
+    cr.stroke()
+
+    # Repere : une SEULE encre sombre, sans le halo creme de la version d'or
+    # plein. Ce halo n'etait pas un ornement, il compensait un vrai probleme, et
+    # les deux fonds sont mesures sur le rendu, halo exclu : sous l'ancien
+    # repere le dome descendait a une clarte de 76 contre 26 pour l'ame, soit
+    # 2,9:1 -- un trait de 2 px a ce contraste-la se noie. Le capuchon ne
+    # descend pas sous 109 contre 20 ici, soit 5,4:1 a la pire fraction, donc
+    # l'ame porte partout et retirer le halo rend au repere sa nettete de trait
+    # grave. Il court du centre au bord du capuchon, comme sur la piece reelle.
+    cr.save()
+    cr.translate(cx, cy)
+    cr.rotate(angle)
+    cr.set_line_cap(cairo.LINE_CAP_ROUND)
+    cr.set_source_rgba(0.098, 0.078, 0.043, 1)
+    cr.set_line_width(max(1.4, radius * 0.085))
+    cr.move_to(0, -cap_r * 0.94)
+    cr.line_to(0, -cap_r * 0.12)
+    cr.stroke()
+    cr.restore()
 
     if not actif:
         # Voile gris : la molette reste lisible mais visiblement hors service.

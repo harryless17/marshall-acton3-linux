@@ -63,6 +63,118 @@ class TestPeintureNePlantePas(unittest.TestCase):
                             "le logo n'a rien peint : police introuvable ?")
 
 
+def clarte_moyenne(surface, cx, cy, r0, r1):
+    """Clarte moyenne des pixels de l'anneau r0..r1 autour de (cx, cy).
+
+    L'ARGB32 de cairo est PRE-MULTIPLIE et range dans l'ordre de la machine,
+    donc BGRA en petit-boutien -- meme piege que compte_rougeatre. Les
+    coefficients suivent cet ordre : 0.114 sur le bleu, 0.299 sur le rouge.
+    """
+    surface.flush()
+    o, pas = surface.get_data(), surface.get_stride()
+    somme = compte = 0
+    for y in range(surface.get_height()):
+        for x in range(surface.get_width()):
+            if not (r0 <= math.hypot(x - cx + 0.5, y - cy + 0.5) <= r1):
+                continue
+            i = y * pas + x * 4
+            somme += 0.114 * o[i] + 0.587 * o[i + 1] + 0.299 * o[i + 2]
+            compte += 1
+    return somme / max(1, compte)
+
+
+def centre_de_lencre_sombre(surface, cx, cy, rayon, seuil=70):
+    """Barycentre des pixels sombres du disque de rayon `rayon`, en coordonnees
+    RELATIVES au centre. Sert a suivre le repere sur le capuchon."""
+    surface.flush()
+    o, pas = surface.get_data(), surface.get_stride()
+    sx = sy = compte = 0
+    for y in range(surface.get_height()):
+        for x in range(surface.get_width()):
+            if math.hypot(x - cx + 0.5, y - cy + 0.5) > rayon:
+                continue
+            i = y * pas + x * 4
+            if 0.114 * o[i] + 0.587 * o[i + 1] + 0.299 * o[i + 2] < seuil:
+                sx += x - cx
+                sy += y - cy
+                compte += 1
+    return (sx / compte, sy / compte, compte) if compte else (0.0, 0.0, 0)
+
+
+class TestDeuxTonsDeLaMolette(unittest.TestCase):
+    """La molette est une piece DEUX TONS : corps sombre molete, capuchon de
+    laiton clair. Ce qui est verrouille ici n'est pas l'allure -- ca se juge a
+    l'oeil -- mais le RAPPORT de clarte entre les deux, sans lequel le dessin
+    retomberait au dome dore uniforme d'avant sans qu'aucun test ne bronche."""
+
+    RAYON = 28
+
+    def peindre(self, fraction=0.5, actif=True, cote=100):
+        """Sur du laiton, comme dans la fenetre reelle."""
+        s, cr = surface_et_contexte(cote, cote)
+        ui.paint_brass(cr, 0, 0, cote, cote)
+        ui.paint_knob(cr, cote / 2, cote / 2, self.RAYON, fraction, actif=actif)
+        return s
+
+    def test_le_capuchon_est_franchement_plus_clair_que_le_corps(self):
+        s = self.peindre()
+        r = self.RAYON
+        # Le capuchon monte a KNOB_CAP * R ; on echantillonne bien en dedans
+        # (0.40 R) pour ne pas attraper son ombre de contact, et le flanc entre
+        # 0.80 et 0.97 R, ou le moletage est trace.
+        capuchon = clarte_moyenne(s, 50, 50, 0, r * 0.40)
+        flanc = clarte_moyenne(s, 50, 50, r * 0.80, r * 0.97)
+        self.assertGreater(capuchon, 120,
+                           f"capuchon a {capuchon:.0f} : ce n'est plus du "
+                           "laiton clair")
+        self.assertLess(flanc, 80,
+                        f"flanc a {flanc:.0f} : le corps n'est plus sombre")
+        self.assertGreater(capuchon, flanc * 2.5,
+                           f"capuchon {capuchon:.0f} contre flanc {flanc:.0f} :"
+                           " la molette n'est plus deux tons")
+
+    def test_le_rapport_survit_a_toutes_les_fractions(self):
+        """Le capuchon et le corps ne tournent pas, mais le moletage et le
+        repere si : le rapport ne doit pas dependre de la valeur."""
+        for fraction in (0.0, 0.5, 1.0):
+            s = self.peindre(fraction=fraction)
+            capuchon = clarte_moyenne(s, 50, 50, 0, self.RAYON * 0.40)
+            flanc = clarte_moyenne(s, 50, 50, self.RAYON * 0.80,
+                                   self.RAYON * 0.97)
+            self.assertGreater(capuchon, flanc * 2.5,
+                               f"f={fraction} : capuchon {capuchon:.0f} contre "
+                               f"flanc {flanc:.0f}")
+
+    def test_hors_connexion_le_capuchon_reste_le_plus_clair(self):
+        """Le voile gris couvre TOUTE la piece : il doit l'eteindre, pas
+        l'aplatir. Une molette hors service reste une molette."""
+        s = self.peindre(actif=False)
+        capuchon = clarte_moyenne(s, 50, 50, 0, self.RAYON * 0.40)
+        flanc = clarte_moyenne(s, 50, 50, self.RAYON * 0.80, self.RAYON * 0.97)
+        self.assertGreater(capuchon, flanc * 2.0,
+                           f"voile pose : capuchon {capuchon:.0f} contre flanc "
+                           f"{flanc:.0f}")
+
+    def test_le_repere_bascule_bien_dun_cote_a_lautre_du_capuchon(self):
+        """Plus fort que la simple difference d'octets : l'encre sombre DU
+        CAPUCHON doit changer de cote. Un moletage qui tournerait tout seul, le
+        repere restant fixe, passerait un test de difference."""
+        cap = self.RAYON * ui.KNOB_CAP * 0.94
+        gauche = centre_de_lencre_sombre(self.peindre(fraction=0.0), 50, 50, cap)
+        droite = centre_de_lencre_sombre(self.peindre(fraction=1.0), 50, 50, cap)
+        self.assertGreater(gauche[2], 10, "aucune encre sombre sur le capuchon")
+        self.assertLess(gauche[0], -1.0,
+                        f"a la butee basse le repere n'est pas a gauche : {gauche}")
+        self.assertGreater(droite[0], 1.0,
+                           f"a la butee haute le repere n'est pas a droite : "
+                           f"{droite}")
+        # ANGLE_MIN et ANGLE_MAX sont symetriques : les deux butees pointent vers
+        # le BAS, et c'est ce qui distingue un repere qui tourne d'un repere qui
+        # glisse le long d'un axe.
+        self.assertGreater(gauche[1], 0.5, f"butee basse pas vers le bas : {gauche}")
+        self.assertGreater(droite[1], 0.5, f"butee haute pas vers le bas : {droite}")
+
+
 class TestPeintureDeLaMolette(unittest.TestCase):
     def test_toutes_les_fractions(self):
         for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):

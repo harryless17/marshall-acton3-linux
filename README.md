@@ -142,6 +142,11 @@ Il installe :
 | `~/.local/share/marshall/marshall_ble.py` | lien vers le module |
 | `~/.local/share/applications/marshall-applet.desktop` | entrée du lanceur |
 | `~/.config/autostart/marshall-applet.desktop` | démarrage à l'ouverture de session |
+| `~/.local/share/icons/hicolor/*/apps/marshall-applet.png` | l'icône **M**, en six tailles |
+
+L'icône est le seul élément **copié** plutôt que lié : elle est rendue à
+l'installation par le même code qui la dessine dans la barre système, donc
+rejouer `./install.sh` la régénère.
 
 `~/bin` n'est pas forcément dans ton `PATH`. Pour taper `marshall-ctl` sans le
 chemin complet :
@@ -248,6 +253,7 @@ automatiquement (sondage toutes les 30 s, backoff en cas d'échec).
 rm -f ~/bin/marshall-applet ~/bin/marshall-ctl
 rm -f ~/.local/share/applications/marshall-applet.desktop
 rm -f ~/.config/autostart/marshall-applet.desktop
+rm -f ~/.local/share/icons/hicolor/*/apps/marshall-applet.png
 rm -rf ~/.local/share/marshall ~/.local/state/marshall
 ```
 

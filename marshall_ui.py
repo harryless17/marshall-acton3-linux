@@ -323,15 +323,132 @@ def paint_brass(cr, x, y, w, h, radius=4):
     # Biseau volontairement sourd. Un filet quasi blanc sur une arete deja
     # pale etait le principal responsable de l'effet feuille polie ; ici le
     # degrade repart du sombre en haut, et 0.22 suffit a marquer l'arete.
-    cr.set_line_width(1)
-    cr.set_source_rgba(1, 0.980, 0.925, 0.22)
-    cr.move_to(x, y + 0.5)
-    cr.line_to(x + w, y + 0.5)
+    #
+    # Le biseau SUIT LE CHEMIN, il n'est plus fait de deux traits droits d'un
+    # bord a l'autre. C'etait sans consequence sur un rectangle a coins de 4 px ;
+    # sur une capsule -- rayon = h / 2, cf. BrassPanel -- les deux traits ne
+    # touchaient plus l'arete que sur la partie droite du contour, et les deux
+    # bouts semi-circulaires restaient sans biseau, donc plats. Le trace est
+    # ecrete au chemin, donc seule la moitie interieure du trait se voit, et le
+    # degre de gris qu'il porte suit la hauteur : clair en haut, sombre en bas.
+    biseau = cairo.LinearGradient(0, y, 0, y + h)
+    biseau.add_color_stop_rgba(0.00, 1, 0.980, 0.925, 0.22)
+    biseau.add_color_stop_rgba(0.45, 1, 0.980, 0.925, 0.05)
+    biseau.add_color_stop_rgba(0.55, 0, 0, 0, 0.10)
+    biseau.add_color_stop_rgba(1.00, 0, 0, 0, 0.38)
+    _rounded_path(cr, x, y, w, h, radius)
+    cr.set_source(biseau)
+    cr.set_line_width(2)
     cr.stroke()
-    cr.set_source_rgba(0, 0, 0, 0.38)
-    cr.move_to(x, y + h - 0.5)
-    cr.line_to(x + w, y + h - 0.5)
+    cr.restore()
+
+
+# -- le creux dans lequel la plaque est encastree --------------------------
+# Sur le panneau reel la plaque n'est pas POSEE sur le tolex, elle est NOYEE
+# dedans : le cuir remonte autour d'elle en une levre arrondie, et la plaque
+# repose au fond de la depression. Ce qui vend une depression, ce n'est pas la
+# forme de la plaque -- c'est l'ombre du cuir qui la surplombe.
+#
+# Marge, en pixels, que la plaque laisse libre autour d'elle pour ce creux. Elle
+# sort du trace : les trois passes d'ombre font 2 * spread, spread et 2 px de
+# large, ecretees a leur moitie exterieure, donc l'ombre porte sur spread px, et
+# la levre eclairee se pose sur le dernier. 5 px a la taille reelle -- a 3 px les
+# trois passes se confondent en un seul lisere qui se lit comme un contour, a
+# 8 px la bande sombre devient un cadre et la plaque a l'air posee sur un
+# passe-partout.
+RECESS_SPREAD = 5
+
+
+def paint_recess(cr, x, y, w, h, radius, *, spread=RECESS_SPREAD):
+    """Le creux autour de la plaque (x, y, w, h) : peint DEHORS, jamais dedans.
+
+    Fonction separee, et non un parametre de paint_brass, precisement pour ca :
+    paint_brass ne peint rien hors de sa boite -- un test l'exige -- alors que
+    tout ce qui suit est de l'ombre POSEE SUR LE TOLEX. Les deux ne peuvent pas
+    partager un ecretage.
+
+    A appeler AVANT paint_brass : l'ombre est tracee a cheval sur l'arete de la
+    plaque et seule sa moitie exterieure survit a l'ecretage, donc la plaque doit
+    ensuite recouvrir ce qui deborde a l'interieur.
+
+    Ou va la lumiere, et pourquoi : toute la facade est eclairee d'en haut, comme
+    le point chaud des molettes. Dans un creux, la paroi du HAUT tourne le dos a
+    la lumiere -- elle est donc sombre, et c'est la que l'ombre est la plus
+    dense -- tandis que la paroi du BAS lui fait face et s'eclaire. C'est le
+    meme raisonnement que l'arete basse de la fente du levier, cf. paint_toggle.
+    Une ombre uniforme tout autour ne donnerait qu'un halo, donc une plaque
+    DECOUPEE et collee, pas une plaque encastree.
+    """
+    cr.save()
+    # Ecretage a l'EXTERIEUR de la plaque : deux chemins et la regle du
+    # pair-impair, le seul moyen d'obtenir un trou dans un ecretage cairo.
+    cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+    cr.rectangle(x - spread, y - spread, w + 2 * spread, h + 2 * spread)
+    _rounded_path(cr, x, y, w, h, radius)
+    cr.clip()
+
+    # Trois passes de plus en plus fines et opaques, comme l'ombre interne du
+    # caisson dans paint_grille : ca donne un degrade vers l'exterieur sans
+    # avoir a construire un vrai flou. Le degrade vertical porte la
+    # dissymetrie haut / bas.
+    for width, haut, bas in ((2.0 * spread, 0.34, 0.13),
+                             (1.0 * spread, 0.42, 0.17),
+                             (2.0, 0.55, 0.26)):
+        ombre = cairo.LinearGradient(0, y, 0, y + h)
+        ombre.add_color_stop_rgba(0.0, 0, 0, 0, haut)
+        ombre.add_color_stop_rgba(1.0, 0, 0, 0, bas)
+        _rounded_path(cr, x, y, w, h, radius)
+        cr.set_source(ombre)
+        cr.set_line_width(width)
+        cr.stroke()
+
+    # La paroi BASSE du creux, eclairee, collee a l'arete de la plaque. Elle
+    # passe apres l'ombre, sinon l'ombre l'eteindrait.
+    paroi = cairo.LinearGradient(0, y + h * 0.45, 0, y + h)
+    paroi.add_color_stop_rgba(0.0, 1, 0.965, 0.878, 0.0)
+    paroi.add_color_stop_rgba(1.0, 1, 0.965, 0.878, 0.34)
+    _rounded_path(cr, x, y, w, h, radius)
+    cr.set_source(paroi)
+    cr.set_line_width(2.4)
     cr.stroke()
+
+    # Un cran d'ombre en plus sur le BOUT DROIT. La lumiere vient du haut a
+    # GAUCHE -- c'est la convention de toute la facade, cf. le point chaud des
+    # molettes -- donc la levre de droite se retourne dans l'ombre. Sans cette
+    # passe les deux bouts de la capsule se peignaient a l'identique, et un creux
+    # symetrique n'a pas de source de lumiere.
+    bout = cairo.LinearGradient(x + w - h * 0.55, 0, x + w + spread, 0)
+    bout.add_color_stop_rgba(0.0, 0, 0, 0, 0.0)
+    bout.add_color_stop_rgba(1.0, 0, 0, 0, 0.45)
+    _rounded_path(cr, x, y, w, h, radius)
+    cr.set_source(bout)
+    cr.set_line_width(2.0 * spread)
+    cr.stroke()
+
+    # La crete de la levre, au bord EXTERIEUR du creux : le cuir s'y retourne
+    # vers le haut, donc elle accroche la lumiere. Le chemin est la plaque
+    # dilatee de spread - 1 ; comme le rayon grandit d'autant, une capsule
+    # dilatee reste une capsule.
+    #
+    # DEUX passes, une par direction de la lumiere, et c'est la seule facon
+    # d'articuler les bouts : le tolex est deja a une clarte de 16 sur 255, il ne
+    # reste presque rien a lui retirer, donc aux deux bouts de la capsule -- ou
+    # l'ombre du haut ne porte pas -- le creux ne peut se lire que par la
+    # LUMIERE. Mesure le long du bout gauche a mi-hauteur avant ces passes :
+    # 16,1 sans creux contre 10,1 avec, soit un ecart de six niveaux qu'on ne
+    # voit pas. La crete, elle, monte a 52.
+    d = max(0.0, spread - 1.0)
+    _rounded_path(cr, x - d, y - d, w + 2 * d, h + 2 * d, radius + d)
+    cr.set_line_width(1.6)
+    for depart, arrivee, alpha in (
+            ((0, y - d), (0, y + h * 0.55), 0.20),                 # arete haute
+            ((x - d, 0), (x + h * 0.55, 0), 0.16)):                # bout gauche
+        crete = cairo.LinearGradient(*depart, *arrivee)
+        crete.add_color_stop_rgba(0.0, 1, 0.949, 0.855, alpha)
+        crete.add_color_stop_rgba(1.0, 1, 0.949, 0.855, 0.0)
+        cr.set_source(crete)
+        cr.stroke_preserve()
+    cr.new_path()
     cr.restore()
 
 
@@ -1529,13 +1646,14 @@ class Toggle(Gtk.DrawingArea):
 # dictee par la rangee des presets plus le bouton d'etat ; la hauteur par la
 # somme des quatre bandes.
 #
-# 425 en hauteur, monte de 400, et les 25 px sont le prix de la graduation : la
-# boite d'une molette passe de 68 a 86 px de cote pour loger l'arc, ce qui porte
-# la plaque de 131 a 143. Detail mesure a 425 : plaque 143, toile 154, rangee 34,
+# 447 en hauteur, monte de 425, et les 22 px sont le prix du creux de la plaque :
+# la bande passe de 143 a 153 px pour loger les RECESS_SPREAD px de tolex que le
+# creux occupe de chaque cote, et la toile suit pour rester dominante (cf.
+# Grille). Detail mesure a 447 : bande de la plaque 153, toile 166, rangee 34,
 # pied 34. La LARGEUR ne bouge pas -- le minimum reste dicte par la rangee des
 # presets a 461, et trois molettes de 86 ne font que 258 + 24 de marge.
 WINDOW_WIDTH = 470
-WINDOW_HEIGHT = 425
+WINDOW_HEIGHT = 447
 MARGIN = 12
 # Laiton visible entre le bord de la plaque et le bloc molette + libelle +
 # valeur. Descendu de 16 a 12 en meme temps que la graduation arrivait : l'arc
@@ -1705,8 +1823,13 @@ class BrassPanel(Gtk.Box):
             # en occupe 10,9 px sur 15, et il ne reste que 4,1 px de laiton nu
             # au-dessus du repere du haut. Defalquer les 15 entiers ferait
             # remonter la plaque de 11 px sur la graduation.
-            column.set_margin_top(round(PLATE_PADDING - TICK_TOP_INSET))
-            column.set_margin_bottom(PLATE_PADDING)
+            # RECESS_SPREAD en plus des deux cotes : la plaque n'occupe plus
+            # toute l'allocation de la bande, elle laisse cette marge au creux,
+            # cf. _paint_background. Sans ca le laiton visible se reduirait
+            # d'autant et les molettes toucheraient l'arete de la capsule.
+            column.set_margin_top(round(PLATE_PADDING - TICK_TOP_INSET)
+                                  + RECESS_SPREAD)
+            column.set_margin_bottom(PLATE_PADDING + RECESS_SPREAD)
             knob = Knob(key, maximum=maximums[key], travel_px=travel)
             caption = Gtk.Label(label=key.upper())
             caption.get_style_context().add_class("marshall-cap")
@@ -1721,7 +1844,22 @@ class BrassPanel(Gtk.Box):
         self.connect("draw", self._on_draw)
 
     def _paint_background(self, cr, w, h):
-        paint_brass(cr, 0, 0, w, h)
+        """La plaque est une CAPSULE encastree, et elle n'occupe pas toute la
+        bande : elle laisse RECESS_SPREAD px de tolex tout autour, ou se peint le
+        creux. Le fond de la bande reste donc partiellement TRANSPARENT, et c'est
+        le tolex de la facade -- deja peint dessous -- qui se voit a travers.
+
+        Rayon = moitie de la hauteur, donc des bouts exactement demi-circulaires.
+        Ce n'est pas un arrondi decoratif : la plaque reelle est une capsule.
+        Verifie et non suppose, _rounded_path tient ce rayon-la sans tordre ses
+        arcs -- releve du premier pixel peint a 30, 60 et 71 px du centre : 6, 33
+        et 65, contre 6,6, 32,6 et 63,1 pour la capsule theorique.
+        """
+        x = y = RECESS_SPREAD
+        plate_w = max(2.0, w - 2 * RECESS_SPREAD)
+        plate_h = max(2.0, h - 2 * RECESS_SPREAD)
+        paint_recess(cr, x, y, plate_w, plate_h, plate_h / 2.0)
+        paint_brass(cr, x, y, plate_w, plate_h, radius=plate_h / 2.0)
 
     def _on_draw(self, _w, cr):
         cr.set_source_surface(
@@ -1745,14 +1883,18 @@ class Grille(Gtk.DrawingArea):
         # que la toile et l'ensemble se lisait comme une barre d'outils posee sur
         # une bande decorative.
         #
-        # Monte de 140 a 152 avec l'arrivee de la graduation, qui porte la plaque
-        # a 143 px. A 140 la domination n'etait plus qu'un accident de la taille
-        # par defaut : la toile ne depassait la plaque que grace au mou de
-        # WINDOW_HEIGHT, et une police de theme plus grande -- qui gonfle le pied
-        # et la rangee des presets, sans que la fenetre puisse s'agrandir -- aurait
-        # ramene la toile a son minimum, donc SOUS la plaque. A 152 l'inversion
-        # est structurellement impossible, quoi que fasse le theme.
-        self.set_size_request(-1, 152)
+        # Monte de 140 a 152 avec l'arrivee de la graduation, puis de 152 a 164
+        # avec le creux de la plaque. A 140 la domination n'etait plus qu'un
+        # accident de la taille par defaut : la toile ne depassait la plaque que
+        # grace au mou de WINDOW_HEIGHT, et une police de theme plus grande -- qui
+        # gonfle le pied et la rangee des presets, sans que la fenetre puisse
+        # s'agrandir -- aurait ramene la toile a son minimum, donc SOUS la plaque.
+        #
+        # 164 est calcule sur la bande de la plaque, pas choisi : la plaque fait
+        # 143 px et le creux lui ajoute 2 x RECESS_SPREAD, donc 153. A 152 la
+        # toile serait passee SOUS la plaque des le minimum, et l'inversion doit
+        # rester structurellement impossible quoi que fasse le theme.
+        self.set_size_request(-1, 164)
         self.connect("draw", self._on_draw)
 
     def _paint_background(self, cr, w, h):

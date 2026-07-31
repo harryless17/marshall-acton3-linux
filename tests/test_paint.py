@@ -63,6 +63,163 @@ class TestPeintureNePlantePas(unittest.TestCase):
                             "le logo n'a rien peint : police introuvable ?")
 
 
+def clarte_de_bande(surface, x0, y0, w, h):
+    """Clarte moyenne d'un rectangle de pixels. Meme ordre d'octets que
+    clarte_moyenne : BGRA."""
+    surface.flush()
+    o, pas = surface.get_data(), surface.get_stride()
+    somme = 0
+    for y in range(y0, y0 + h):
+        for x in range(x0, x0 + w):
+            i = y * pas + x * 4
+            somme += 0.114 * o[i] + 0.587 * o[i + 1] + 0.299 * o[i + 2]
+    return somme / max(1, w * h)
+
+
+class TestPlaqueEnCapsule(unittest.TestCase):
+    """La plaque reelle est une CAPSULE -- rayon egal a la moitie de la hauteur,
+    donc des bouts demi-circulaires -- encastree dans le tolex. Deux proprietes
+    se verifient et ne s'admettent pas : les arcs de _rounded_path tiennent a ce
+    rayon-la, et rien n'est peint hors de la boite annoncee."""
+
+    # La bande reelle : 446 de large pour 143 de haut, moins le creux.
+    REELLE = (436, 133)
+
+    def test_peint_a_tous_les_rapports_de_forme(self):
+        for w, h in (self.REELLE, (60, 60), (400, 24), (30, 200)):
+            s, cr = surface_et_contexte(w, h)
+            ui.paint_brass(cr, 0, 0, w, h, radius=h / 2)
+            self.assertTrue(a_peint_quelque_chose(s), f"capsule vide en {w}x{h}")
+
+    def test_les_bouts_sont_bien_demi_circulaires(self):
+        """Le vrai risque : a rayon = h / 2 les deux arcs d'un meme bout
+        partagent leur centre, et une construction fragile donnerait des arcs
+        croises ou une boucle. On compare le premier pixel peint de chaque ligne
+        au bord theorique de la capsule."""
+        w, h = self.REELLE
+        s, cr = surface_et_contexte(w, h)
+        ui.paint_brass(cr, 0, 0, w, h, radius=h / 2)
+        s.flush()
+        o, pas = s.get_data(), s.get_stride()
+        rayon = h / 2.0
+        for dy in (0, 20, 40, 60, 66):
+            y = min(h - 1, int(rayon + dy))
+            peints = [x for x in range(w) if o[y * pas + x * 4 + 3] > 120]
+            attendu = rayon - math.sqrt(max(0.0, rayon ** 2 - dy ** 2))
+            self.assertLess(
+                abs(peints[0] - attendu), 2.5,
+                f"a dy={dy} le bord est a {peints[0]} au lieu de {attendu:.1f}")
+            self.assertLess(abs((w - 1 - peints[-1]) - attendu), 2.5,
+                            f"a dy={dy} le bord droit ne suit pas la capsule")
+
+    def test_ne_peint_rien_hors_de_sa_boite(self):
+        """C'est ce qui autorise paint_recess a exister a part : la plaque ne
+        peint que dedans, le creux ne peint que dehors. Le biseau suit maintenant
+        le chemin sur 2 px de large, donc sans ecretage il baverait."""
+        w, h, marge = self.REELLE[0], self.REELLE[1], 8
+        for rayon in (4, h / 2):
+            s, cr = surface_et_contexte(w + 2 * marge, h + 2 * marge)
+            ui.paint_brass(cr, marge, marge, w, h, radius=rayon)
+            s.flush()
+            o, pas = s.get_data(), s.get_stride()
+            dehors = 0
+            for y in range(h + 2 * marge):
+                for x in range(w + 2 * marge):
+                    dedans = (marge <= x < marge + w and marge <= y < marge + h)
+                    if not dedans and o[y * pas + x * 4 + 3] > 0:
+                        dehors += 1
+            self.assertEqual(dehors, 0,
+                             f"{dehors} pixels peints hors de la boite "
+                             f"(rayon {rayon})")
+
+
+class TestCreuxDeLaPlaque(unittest.TestCase):
+    """Le creux : le tolex doit remonter autour de la plaque. Ce qui se mesure
+    ici n'est pas l'illusion -- ca se juge a l'oeil -- mais le fait que le tolex
+    soit REELLEMENT assombri contre la plaque et REELLEMENT eclairci sur la
+    levre. Sans ces deux ecarts il n'y a pas de depression, juste un contour."""
+
+    W, H, MARGE = 436, 133, 14
+
+    def rendre(self, creux):
+        s, cr = surface_et_contexte(self.W + 2 * self.MARGE,
+                                    self.H + 2 * self.MARGE)
+        ui.paint_tolex(cr, self.W + 2 * self.MARGE, self.H + 2 * self.MARGE)
+        if creux:
+            ui.paint_recess(cr, self.MARGE, self.MARGE, self.W, self.H,
+                            self.H / 2)
+        ui.paint_brass(cr, self.MARGE, self.MARGE, self.W, self.H,
+                       radius=self.H / 2)
+        return s
+
+    def test_le_tolex_est_assombri_juste_au_dessus_de_la_plaque(self):
+        """La paroi HAUTE du creux tourne le dos a la lumiere, donc c'est la que
+        l'ombre est la plus dense. On echantillonne au milieu de la longueur, ou
+        la capsule est droite."""
+        largeur, x0 = 120, self.MARGE + self.W // 2 - 60
+        sans = clarte_de_bande(self.rendre(False), x0, self.MARGE - 3,
+                               largeur, 3)
+        avec = clarte_de_bande(self.rendre(True), x0, self.MARGE - 3,
+                               largeur, 3)
+        self.assertLess(avec, sans * 0.75,
+                        f"le tolex colle a la plaque n'est pas assombri : "
+                        f"{avec:.1f} avec creux contre {sans:.1f} sans")
+
+    def test_la_levre_accroche_la_lumiere(self):
+        """Au-dela de l'ombre, la crete du cuir remonte et s'eclaire. C'est cette
+        inversion sombre puis clair qui se lit comme un relief : une simple bande
+        sombre se lirait comme un contour epais."""
+        largeur, x0 = 120, self.MARGE + self.W // 2 - 60
+        sans = clarte_de_bande(self.rendre(False), x0, self.MARGE - 5,
+                               largeur, 2)
+        avec = clarte_de_bande(self.rendre(True), x0, self.MARGE - 5,
+                               largeur, 2)
+        self.assertGreater(avec, sans * 1.6,
+                           f"pas de levre claire au-dessus de l'ombre : "
+                           f"{avec:.1f} avec creux contre {sans:.1f} sans")
+
+    def test_la_paroi_basse_est_eclairee(self):
+        """Symetrique de l'ombre du haut, et c'est le meme raisonnement que
+        l'arete basse de la fente du levier : dans un creux eclaire d'en haut, la
+        paroi du bas recoit la lumiere."""
+        largeur, x0 = 120, self.MARGE + self.W // 2 - 60
+        y = self.MARGE + self.H
+        sans = clarte_de_bande(self.rendre(False), x0, y, largeur, 1)
+        avec = clarte_de_bande(self.rendre(True), x0, y, largeur, 1)
+        self.assertGreater(avec, sans * 1.6,
+                           f"la paroi basse n'est pas eclairee : {avec:.1f} "
+                           f"contre {sans:.1f}")
+
+    def test_le_creux_ne_peint_RIEN_dans_la_plaque(self):
+        """L'invariant qui permet de l'appeler AVANT paint_brass sans que la
+        plaque ait a le recouvrir : l'ecretage pair-impair laisse l'interieur
+        vierge. Si cet ecretage sautait, l'ombre traverserait le laiton."""
+        s, cr = surface_et_contexte(self.W + 2 * self.MARGE,
+                                    self.H + 2 * self.MARGE)
+        ui.paint_recess(cr, self.MARGE, self.MARGE, self.W, self.H, self.H / 2)
+        s.flush()
+        o, pas = s.get_data(), s.get_stride()
+        dedans = 0
+        for y in range(self.MARGE + 2, self.MARGE + self.H - 2):
+            for x in range(self.MARGE + int(self.H / 2), self.MARGE + self.W
+                           - int(self.H / 2)):
+                if o[y * pas + x * 4 + 3] > 0:
+                    dedans += 1
+        self.assertEqual(dedans, 0, f"{dedans} pixels d'ombre dans la plaque")
+
+    def test_les_deux_bouts_ne_sont_pas_peints_a_lidentique(self):
+        """La lumiere vient du haut a GAUCHE : un creux dont les deux bouts se
+        peignent pareil n'a pas de source de lumiere."""
+        s = self.rendre(True)
+        gauche = clarte_de_bande(s, self.MARGE - 5, self.MARGE + self.H // 2 - 8,
+                                 4, 16)
+        droite = clarte_de_bande(s, self.MARGE + self.W + 1,
+                                 self.MARGE + self.H // 2 - 8, 4, 16)
+        self.assertGreater(gauche, droite * 1.5,
+                           f"bout gauche {gauche:.1f} contre bout droit "
+                           f"{droite:.1f} : le creux est symetrique")
+
+
 def clarte_moyenne(surface, cx, cy, r0, r1):
     """Clarte moyenne des pixels de l'anneau r0..r1 autour de (cx, cy).
 

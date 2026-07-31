@@ -10,7 +10,7 @@ Control your **Marshall Acton III** speaker from Linux — volume, bass and treb
 (which has no Linux version).
 
 <p align="center">
-  <img src="docs/images/settings.png" alt="La fenêtre en façade d'amplificateur : plaque de laiton avec les trois molettes volume, bass et treble, toile tissée et logo doré, les quatre presets, l'état du lien, l'interrupteur de démarrage et le bouton Quitter" width="470">
+  <img src="docs/images/settings.png" alt="La fenêtre en façade d'amplificateur : plaque de laiton encastrée en capsule portant trois molettes bicolores, chacune entourée de graduations rouges qui montent avec la valeur, plus un levier doré SESSION ; en dessous la toile tissée et le logo, puis les quatre presets, l'état du lien et le bouton Quitter" width="530">
 </p>
 <p align="center">
   <img src="docs/images/tray.png" alt="L'icône M dorée dans la barre système GNOME, à côté des autres indicateurs" width="320">
@@ -50,10 +50,11 @@ marshall-ctl preset Musique    # Neutre | Films | Musique | Voix / podcast
 ```
 
 **Left-click** the tray icon to open a Cairo-drawn Marshall amplifier facade:
-three gold rotary knobs on a brushed brass plate, the four presets, link status,
-an autostart switch and a Quit button. Knobs turn by vertical drag, by the mouse
-wheel (exactly one notch per notch) or with the arrow keys, and they follow the
-speaker's physical knobs live.
+three two-tone knobs on a recessed brass capsule, each ringed by **red graduation
+marks** that fill up with the value, plus a **gold toggle lever** for start-with-
+session; below that the woven grille, the four presets, link status and a Quit
+button. Knobs turn by vertical drag, by the mouse wheel (exactly one notch per
+notch) or with the arrow keys, and they follow the speaker's physical knobs live.
 
 The right-click menu still exists but **do not rely on it** — on GNOME 46 it does
 not open at all, which is why everything lives in the window.
@@ -75,9 +76,11 @@ depuis Linux, sans toucher aux molettes physiques et sans passer par
 l'application mobile Marshall (qui n'existe pas sous Linux).
 
 - une **fenêtre en façade d'amplificateur**, dessinée en Cairo : trois molettes
-  rotatives dorées sur une plaque de laiton, les quatre presets, l'état du lien,
-  l'interrupteur de démarrage automatique et le bouton Quitter. **Clic gauche sur
-  l'icône de la barre système** pour l'ouvrir ;
+  bicolores sur une plaque de laiton encastrée, chacune entourée de **graduations
+  rouges** qui montent avec la valeur, plus un **levier doré** pour le démarrage
+  avec la session. En dessous, la toile tissée, les quatre presets, l'état du lien
+  et le bouton Quitter. **Clic gauche sur l'icône de la barre système** pour
+  l'ouvrir ;
 - un **CLI**, `marshall-ctl` ;
 - les changements faits sur les molettes physiques de l'enceinte remontent en
   direct dans l'interface.

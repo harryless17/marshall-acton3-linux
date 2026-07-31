@@ -4,6 +4,7 @@ afficheur n'est requis.
 Ces tests attestent l'absence de plantage et le fait que quelque chose est
 reellement peint -- PAS la beaute, qui se juge a l'oeil.
 """
+import math
 import os
 import sys
 import tempfile
@@ -89,6 +90,145 @@ class TestPeintureDeLaMolette(unittest.TestCase):
             rendus.append(bytes(s.get_data()))
         self.assertNotEqual(rendus[0], rendus[1],
                             "le repere de la molette ne tourne pas")
+
+
+def compte_rougeatre(surface):
+    """Nombre de pixels franchement rouges.
+
+    L'ARGB32 de cairo est PRE-MULTIPLIE et range dans l'ordre de la machine,
+    donc BGRA en petit-boutien -- meme piege que icon_pixbuf. On lit donc
+    octets[o + 2] pour le rouge, et on exige un alpha eleve avant de comparer
+    les canaux, sans quoi les pixels a moitie couverts du bord des traits
+    fausseraient le compte.
+
+    Le seuil R - V > 60 est cale sur les deux teintes en presence : TICK_RED est
+    a R - V = 158, et le laiton de la plaque comme TICK_RED_OFF sont a moins de
+    30. Aucune des deux ne passe par accident.
+    """
+    surface.flush()
+    octets = surface.get_data()
+    compte = 0
+    for o in range(0, len(octets), 4):
+        b, v, r, a = octets[o], octets[o + 1], octets[o + 2], octets[o + 3]
+        if a > 200 and r - v > 60 and r - b > 60:
+            compte += 1
+    return compte
+
+
+class TestGraduationDeLaMolette(unittest.TestCase):
+    """La graduation rouge autour d'une molette. Ce qui se teste ici n'est pas
+    l'allure -- ca se juge a l'oeil -- mais le fait que le NOMBRE de reperes
+    allumes suive la valeur, et dans le bon sens."""
+
+    def contexte_sur_laiton(self, cote=120):
+        """Sur du laiton et non sur du transparent : c'est le fond reel, et un
+        rouge se compte differemment selon ce qu'il recouvre."""
+        s, cr = surface_et_contexte(cote, cote)
+        ui.paint_brass(cr, 0, 0, cote, cote)
+        return s, cr
+
+    def test_tous_les_rayons_et_toutes_les_fractions(self):
+        for rayon in (8, 16, 28, 44):
+            for fraction in (0.0, 0.5, 1.0):
+                for actif in (True, False):
+                    cote = int(rayon * 2 * ui.TICK_EXTENT) + 8
+                    s, cr = surface_et_contexte(cote, cote)
+                    ui.paint_knob_ticks(cr, cote / 2, cote / 2, rayon,
+                                        fraction, actif=actif)
+                    self.assertTrue(
+                        a_peint_quelque_chose(s),
+                        f"rien de peint a r{rayon} f{fraction} actif={actif}")
+
+    def test_rayon_minuscule_ne_leve_pas(self):
+        s, cr = surface_et_contexte(12, 12)
+        ui.paint_knob_ticks(cr, 6, 6, 3, 0.5)
+        self.assertTrue(a_peint_quelque_chose(s))
+
+    def test_le_nombre_de_reperes_allumes_MONTE_avec_la_fraction(self):
+        """Le coeur du dispositif. On compte les pixels rouges et on exige que
+        ca CROISSE -- pas seulement que ca differe : un arc qui tournerait sans
+        s'allonger passerait un test de simple difference, alors qu'il ne dirait
+        plus le niveau."""
+        comptes = []
+        for fraction in (0.0, 0.5, 1.0):
+            s, cr = self.contexte_sur_laiton()
+            ui.paint_knob_ticks(cr, 60, 60, 28, fraction)
+            comptes.append(compte_rougeatre(s))
+        self.assertGreater(comptes[0], 0,
+                           "a fraction 0 aucun repere n'est allume : un arc "
+                           "entierement eteint se lit comme une panne")
+        self.assertLess(comptes[0], comptes[1],
+                        f"0.0 -> 0.5 ne fait pas monter le rouge : {comptes}")
+        self.assertLess(comptes[1], comptes[2],
+                        f"0.5 -> 1.0 ne fait pas monter le rouge : {comptes}")
+
+    def test_a_zero_un_seul_repere_est_allume(self):
+        """Regle explicite : le repere de la butee basse est allume DES la
+        fraction 0. Le compte a 0 doit donc valoir a peu pres celui d'un seul
+        repere -- ici on le compare a la fraction 0.1, qui en allume deux."""
+        comptes = []
+        for fraction in (0.0, 0.1):
+            s, cr = self.contexte_sur_laiton()
+            ui.paint_knob_ticks(cr, 60, 60, 28, fraction)
+            comptes.append(compte_rougeatre(s))
+        # Le repere 0 est une butee, donc plus long que le repere 1 : on ne peut
+        # pas exiger le double exactement, seulement une nette augmentation.
+        self.assertGreater(comptes[1], comptes[0] * 1.2,
+                           f"le deuxieme repere ne s'allume pas : {comptes}")
+
+    def test_a_un_tous_les_reperes_sont_allumes(self):
+        """Aucun repere sombre ne doit rester a la butee haute : la comparaison
+        est <= et non <, et un > laisserait le dernier eteint pour toujours."""
+        s, cr = self.contexte_sur_laiton()
+        ui.paint_knob_ticks(cr, 60, 60, 28, 1.0)
+        plein = compte_rougeatre(s)
+        s, cr = self.contexte_sur_laiton()
+        ui.paint_knob_ticks(cr, 60, 60, 28, 0.95)
+        presque = compte_rougeatre(s)
+        self.assertGreater(plein, presque,
+                           "le repere de butee haute ne s'allume jamais")
+
+    def test_inactif_eteint_le_rouge(self):
+        """Une enceinte deconnectee ne doit pas avoir l'air de jouer. On le
+        MESURE : le compte de pixels rouges doit s'effondrer, pas simplement
+        changer."""
+        comptes = {}
+        for actif in (True, False):
+            s, cr = self.contexte_sur_laiton()
+            ui.paint_knob_ticks(cr, 60, 60, 28, 1.0, actif=actif)
+            comptes[actif] = compte_rougeatre(s)
+        self.assertGreater(comptes[True], 0)
+        self.assertLess(comptes[False], comptes[True] * 0.05,
+                        f"le rouge ne s'eteint pas hors connexion : {comptes}")
+
+    def test_inactif_peint_quand_meme_larc(self):
+        """Eteindre le rouge ne doit pas effacer la graduation : la course
+        reste imprimee sur la plaque, connectee ou non."""
+        s, cr = surface_et_contexte(120, 120)
+        ui.paint_knob_ticks(cr, 60, 60, 28, 0.6, actif=False)
+        self.assertTrue(a_peint_quelque_chose(s))
+
+    def test_larc_ne_touche_pas_le_dome(self):
+        """Contrainte geometrique, et pas seulement esthetique : KNOB_MARGIN est
+        calcule sur TICK_EXTENT, donc si un trait partait de l'interieur du dome
+        ou depassait l'extent, le calcul de la marge serait faux."""
+        rayon, cote = 28, 160
+        s, cr = surface_et_contexte(cote, cote)
+        ui.paint_knob_ticks(cr, cote / 2, cote / 2, rayon, 1.0)
+        s.flush()
+        octets, pas = s.get_data(), s.get_stride()
+        dedans = dehors = 0
+        for y in range(cote):
+            for x in range(cote):
+                if octets[y * pas + x * 4 + 3] <= 40:
+                    continue
+                d = math.hypot(x - cote / 2 + 0.5, y - cote / 2 + 0.5)
+                if d < rayon:
+                    dedans += 1
+                if d > rayon * ui.TICK_EXTENT + 2:
+                    dehors += 1
+        self.assertEqual(dedans, 0, f"{dedans} pixels d'encre sous le dome")
+        self.assertEqual(dehors, 0, f"{dehors} pixels d'encre au-dela de l'arc")
 
 
 class TestGlypheM(unittest.TestCase):

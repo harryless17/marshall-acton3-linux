@@ -749,16 +749,147 @@ def paint_knob(cr, cx, cy, radius, fraction, actif=True):
     cr.restore()
 
 
+# -- la graduation imprimee autour des molettes ---------------------------
+# ONZE reperes, et non un par cran : c'est un choix d'OBJET, pas d'affichage. Le
+# panneau reel porte une echelle 0..10 imprimee sur le laiton, alors que le
+# volume compte 32 crans en interne. Un repere par cran donnerait un bargraphe
+# de 32 segments, qui ne ressemble a rien de ce qui s'imprime sur une plaque --
+# et 32 traits sur les 280 degres de la course laisseraient 5,4 px d'arc entre
+# deux traits de 2 px, donc un peigne. La precision est deja rendue par le
+# chiffre pose sous la molette ; la graduation ne sert qu'a lire le niveau SANS
+# lire le nombre.
+TICK_COUNT = 11
+# Fractions du rayon du dome. Le vide de 0.10 R (2,8 px a r28) est ce qui separe
+# la graduation du moletage, qui monte deja a 0.98 R : des reperes colles au dome
+# se liraient comme des dents de plus.
+TICK_GAP = 0.10
+# 0.21 R, soit 5,9 px a r28. Compare a l'oeil sur planche a 1:1 contre 0.16 et
+# 0.24 : a 0.16 les traits sont trapus et l'arc se lit comme un pointille, a
+# 0.24 ils fusent et la molette prend l'air d'un soleil dessine. A 0.21 le trait
+# est deux fois plus long que large et se lit comme un trait imprime.
+TICK_LEN = 0.21
+# Butees plus longues, comme le 0 et le 10 imprimes sur le panneau : ce sont les
+# deux seules positions de la course qui ont un nom, et l'arc a besoin de bornes
+# visibles pour se lire comme une echelle et non comme un semis de traits.
+# Verifie a 1:1 : en les ramenant a TICK_LEN, l'arc perd ses extremites et on ne
+# voit plus ou la course commence.
+TICK_LEN_END = 0.29
+# Largeur de trait, en fraction du rayon : 2,0 px a r28. Le plancher en PIXELS
+# est ce qui tient les petits rayons, comme M_DIAG_MIN tient le M a 16 px -- un
+# trait sous 1,5 px se rend en deux colonnes a moitie couvertes, et un rouge a
+# moitie couvert devient rose.
+TICK_WIDTH = 0.072
+# Rayon exterieur de l'arc, en fraction du rayon du dome. Sert DEUX fois, d'ou
+# la constante : elle pose KNOB_MARGIN, et elle place l'anneau de focus
+# au-dela de la graduation au lieu de le faire passer dedans.
+TICK_EXTENT = 1.0 + TICK_GAP + TICK_LEN_END          # 1.39
+
+# Rouge IMPRIME, pas voyant d'alarme. R eleve, mais V franchement au-dessus de B
+# (+0,11), donc un rouge CHAUD qui tire vers l'orange sans y basculer -- essaye a
+# (0.800, 0.259, 0.075), l'arc devient orange et ce n'est plus la meme marque.
+# Et volontairement CLAIR pour un rouge : sur planche a 1:1 un rouge profond
+# (0.706, 0.137, 0.071) s'enfonce dans le laiton sombre du bas de la plaque, et
+# les deux reperes de butee -- ceux qui portent l'information "au minimum" --
+# sont justement les plus bas. Un trait de 2 px n'a pas la surface qu'il faut
+# pour se permettre d'etre sombre.
+TICK_RED = (0.816, 0.196, 0.086)
+# Presque noir mais CHAUD, de la meme famille que le libelle .marshall-cap
+# (#3a2c06) : un noir neutre sur du laiton fait une tache etrangere.
+TICK_DARK = (0.086, 0.071, 0.043)
+# Hors connexion, le rouge s'ETEINT. Meme intention que le voile de
+# paint_knob : un gris neutre a peine froid, de clarte voisine du rouge qu'il
+# remplace, donc l'arc garde sa forme et perd sa couleur. Une enceinte
+# deconnectee ne doit pas avoir l'air de jouer.
+TICK_RED_OFF = (0.404, 0.396, 0.412)
+
+
+def paint_knob_ticks(cr, cx, cy, radius, fraction, actif=True):
+    """La graduation autour d'une molette : rouge jusqu'a la valeur, sombre
+    au-dela.
+
+    A appeler AVANT paint_knob, et pas apres : l'ombre portee du dome tombe
+    alors sur le pied des reperes, ce qui pose la graduation SOUS la molette --
+    de l'encre sur la plaque, que la molette ombre -- au lieu de par-dessus, ou
+    elle aurait l'air collee sur l'ombre.
+
+    Le repere i est allume si sa position i / 10 est ATTEINTE par fraction. Le
+    premier l'est donc toujours, sans cas particulier, puisque 0 <= fraction
+    quelle que soit la valeur -- et c'est voulu : un arc entierement eteint se
+    lit comme un dessin casse, pas comme une molette au minimum.
+
+    Aucun epsilon dans cette comparaison, a l'inverse de SCROLL_EPSILON, et
+    c'est verifie et non suppose : a l'EQ les deux membres sont la MEME division
+    (i / 10 d'un cote, value / 10 de l'autre, maximum 10 aux graves comme aux
+    aigus), or une division IEEE est correctement arrondie, donc les deux
+    doubles sont egaux bit a bit. Ca compte : le preset "Voix / podcast" pose
+    justement bass a 3, et un repere qui s'eteindrait pile sur un preset serait
+    la premiere chose qu'on remarque.
+
+    Cout mesure a r28 : 0,04 ms, contre 0,22 ms pour paint_knob. La question
+    valait d'etre posee -- la molette est redessinee a chaque trame d'un glisse,
+    releve a 31 dessins pour 200 px en 954 ms -- mais 22 segments de 6 px ne
+    pesent rien face au dome et a ses quatre degrades.
+    """
+    fraction = max(0.0, min(1.0, fraction))
+    span = ANGLE_MAX - ANGLE_MIN
+    inner = radius * (1.0 + TICK_GAP)
+    cr.save()
+    # BUTT et non ROUND : un bout arrondi ajoute une demi-largeur de trait a
+    # chaque extremite, donc l'arc deborderait de TICK_EXTENT -- sur quoi
+    # KNOB_MARGIN est calcule au pixel pres.
+    cr.set_line_cap(cairo.LINE_CAP_BUTT)
+    cr.set_line_width(max(1.5, radius * TICK_WIDTH))
+    for i in range(TICK_COUNT):
+        position = i / (TICK_COUNT - 1)
+        angle = ANGLE_MIN + span * position
+        # Meme convention que le repere de paint_knob : le zero pointe vers le
+        # HAUT puis tourne de angle, donc la direction vaut (sin, -cos). C'est
+        # ce qui garantit que la pointe du repere de la molette arrive pile sur
+        # le dernier trait allume -- sans quoi l'arc et l'aiguille se
+        # contrediraient, et l'oeil croit l'aiguille.
+        ux, uy = math.sin(angle), -math.cos(angle)
+        bout = TICK_LEN_END if i in (0, TICK_COUNT - 1) else TICK_LEN
+        outer = inner + radius * bout
+        if position <= fraction:
+            couleur = TICK_RED + (1.0,) if actif else TICK_RED_OFF + (0.88,)
+        else:
+            couleur = TICK_DARK + (0.92,)
+        # Une ombre d'un demi-pixel avant l'encre, comme le lettrage de
+        # paint_logo : sur du laiton brosse, un trait pose sans ombre flotte
+        # au-dessus de la plaque. Elle est tracee pour TOUS les reperes, y
+        # compris les sombres ou elle ne se voit pas -- de l'encre rouge et de
+        # l'encre noire ont le meme relief, et un decalage n'aurait aucune
+        # raison physique.
+        for decalage, rgba in ((0.7, (0, 0, 0, 0.38)), (0.0, couleur)):
+            cr.set_source_rgba(*rgba)
+            cr.move_to(cx + ux * inner + decalage, cy + uy * inner + decalage)
+            cr.line_to(cx + ux * outer + decalage, cy + uy * outer + decalage)
+            cr.stroke()
+    cr.restore()
+
+
 # r28, remonte de 24. Le 24 datait du temps ou le border_width de la plaque lui
 # mangeait 20 px de hauteur : la place manquait alors pour le libelle et la
 # valeur. Depuis que le vide vient des marges des colonnes, elle est la, et un
 # disque de 48 px n'occupait que 32 % d'une cellule de 148 -- trois petits plots
 # sur une large plaque. A 56 px il en occupe 38 % et se lit comme une commande
-# qu'on attrape. C'est aussi le maximum tenable : la plaque grandit de 2 px par
-# pixel de rayon, donc r29 porterait le minimum de la facade a 401 px et ferait
-# grandir une fenetre dont la taille est arretee a 470x400.
+# qu'on attrape. Il ne bouge PAS avec l'arrivee de la graduation : le dome garde
+# sa taille, c'est la marge qui grandit pour loger l'arc.
 KNOB_RADIUS = 28
-KNOB_MARGIN = 6
+# 15, monte de 6, et le chiffre est CALCULE et non choisi : l'arc va jusqu'a
+# KNOB_RADIUS * TICK_EXTENT, soit 38,9 px, donc 10,9 px au-dela du dome ;
+# l'anneau de focus se pose 2,2 px plus loin, sur 2 px de large, donc son bord
+# exterieur tombe a 42,1. Il faut 43 px de demi-boite, soit 15 de marge. Cette
+# marge n'est plus du vide decoratif : elle EST le logement de la graduation, ce
+# que la marge des colonnes de BrassPanel doit savoir (cf. TICK_TOP_INSET).
+KNOB_MARGIN = 15
+# Vide reel entre le haut de la boite de la molette et la premiere encre de
+# l'arc. Le repere du milieu (i = 5) pointe pile vers le haut, donc c'est lui qui
+# borne : (KNOB_RADIUS + KNOB_MARGIN) - KNOB_RADIUS * TICK_EXTENT = 4,1 px.
+# BrassPanel s'en sert pour que le laiton VISIBLE reste egal en haut et en bas ;
+# sans ca, la marge de colonne compterait les 15 px de KNOB_MARGIN comme du vide
+# alors que l'arc en occupe 10,9.
+TICK_TOP_INSET = (KNOB_RADIUS + KNOB_MARGIN) - KNOB_RADIUS * TICK_EXTENT
 
 # Un cran de roulette physique vaut 1.0 sur l'axe de defilement lisse. On
 # accumule les fractions et on ne franchit un cran de valeur qu'a 1.0 atteint :
@@ -859,18 +990,28 @@ class Knob(Gtk.DrawingArea):
     def _on_draw(self, _w, cr):
         alloc = self.get_allocation()
         rayon = max(6, min(alloc.width, alloc.height) / 2 - KNOB_MARGIN)
+        actif = self.get_sensitive()
+        # La graduation AVANT le dome : l'ombre portee de la molette doit tomber
+        # sur le pied des reperes, cf. paint_knob_ticks.
+        paint_knob_ticks(cr, alloc.width / 2, alloc.height / 2, rayon,
+                         self._m.fraction, actif=actif)
         paint_knob(cr, alloc.width / 2, alloc.height / 2, rayon,
-                   self._m.fraction, actif=self.get_sensitive())
+                   self._m.fraction, actif=actif)
         if self.has_visible_focus():
             # Anneau pour le focus clavier seulement. Nuance mesuree : le
             # drapeau est porte par la FENETRE, pas par le geste. Il est faux
             # tant que le clavier n'a pas servi -- une session purement souris
             # n'a donc aucun cerclage -- puis vrai ensuite, y compris apres un
             # clic. C'est l'heuristique de GTK, la meme que ses widgets natifs.
+            #
+            # L'anneau se pose AU-DELA de l'arc, et non plus a rayon + 3 : les
+            # reperes occupent maintenant cette bande, et un cercle qui les
+            # traverse ne se lit ni comme un focus ni comme une graduation.
             cr.save()
             cr.set_source_rgba(*GOLD_PIPING, 0.9)
             cr.set_line_width(2)
-            cr.arc(alloc.width / 2, alloc.height / 2, rayon + 3, 0, 2 * math.pi)
+            cr.arc(alloc.width / 2, alloc.height / 2, rayon * TICK_EXTENT + 2.2,
+                   0, 2 * math.pi)
             cr.stroke()
             cr.restore()
         return False
@@ -984,16 +1125,28 @@ class Knob(Gtk.DrawingArea):
 
 # -- assemblage -----------------------------------------------------------
 # Taille par defaut de la fenetre. Ce n'est PAS un cadrage : la facade exige
-# deja 461x393 avec la police du theme de cette machine (mesure), et une fenetre
-# non redimensionnable plus petite que le minimum grandit d'elle-meme. Ces
-# valeurs laissent donc juste un peu de mou, que la Grille absorbe puisqu'elle
-# est le seul enfant extensible. La largeur est dictee par la rangee des presets
-# plus le bouton d'etat ; la hauteur par la somme des quatre bandes.
+# 461x423 avec la police du theme de cette machine (mesure hors ecran sur une
+# Gtk.OffscreenWindow), et une fenetre non redimensionnable plus petite que son
+# minimum grandit d'elle-meme. Ces valeurs laissent donc juste un peu de mou, que
+# la Grille absorbe puisqu'elle est le seul enfant extensible. La largeur est
+# dictee par la rangee des presets plus le bouton d'etat ; la hauteur par la
+# somme des quatre bandes.
+#
+# 425 en hauteur, monte de 400, et les 25 px sont le prix de la graduation : la
+# boite d'une molette passe de 68 a 86 px de cote pour loger l'arc, ce qui porte
+# la plaque de 131 a 143. Detail mesure a 425 : plaque 143, toile 154, rangee 34,
+# pied 34. La LARGEUR ne bouge pas -- le minimum reste dicte par la rangee des
+# presets a 461, et trois molettes de 86 ne font que 258 + 24 de marge.
 WINDOW_WIDTH = 470
-WINDOW_HEIGHT = 400
+WINDOW_HEIGHT = 425
 MARGIN = 12
-# Laiton visible entre le bord de la plaque et le bloc molette + libelle + valeur.
-PLATE_PADDING = 16
+# Laiton visible entre le bord de la plaque et le bloc molette + libelle +
+# valeur. Descendu de 16 a 12 en meme temps que la graduation arrivait : l'arc
+# apporte deja de l'encre tout autour de la molette, donc 16 px de laiton NU
+# par-dessus faisaient une plaque enflee -- 151 px de haut pour 140 de toile,
+# soit exactement l'inversion que la Grille cherche a eviter. A 12 la plaque
+# retombe a 143 et la toile la domine de nouveau.
+PLATE_PADDING = 12
 
 # Les trois registres pilotables, avec leur course de glisse. L'ordre est celui
 # du panneau de commandes de l'enceinte.
@@ -1154,12 +1307,18 @@ class BrassPanel(Gtk.Box):
         for key, travel in REGISTERS:
             column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
             # Haut et bas dissymetriques a dessein : la colonne commence par une
-            # Knob, qui porte deja ses KNOB_MARGIN px de vide interne, et finit
-            # par une etiquette qui s'arrete pile a son texte. A marge egale la
-            # plaque montrerait donc KNOB_MARGIN px de laiton de moins sous la
-            # valeur qu'au-dessus de la molette, et la valeur aurait l'air de
-            # tomber du bord. On vise du laiton VISIBLE egal des deux cotes.
-            column.set_margin_top(PLATE_PADDING - KNOB_MARGIN)
+            # Knob, qui porte deja du vide interne au-dessus de son encre, et
+            # finit par une etiquette qui s'arrete pile a son texte. A marge
+            # egale la plaque montrerait donc plus de laiton au-dessus de la
+            # molette que sous la valeur, et la valeur aurait l'air de tomber du
+            # bord. On vise du laiton VISIBLE egal des deux cotes.
+            #
+            # C'est TICK_TOP_INSET et non KNOB_MARGIN qu'on defalque depuis que
+            # la graduation existe : la marge de la molette n'est plus vide, l'arc
+            # en occupe 10,9 px sur 15, et il ne reste que 4,1 px de laiton nu
+            # au-dessus du repere du haut. Defalquer les 15 entiers ferait
+            # remonter la plaque de 11 px sur la graduation.
+            column.set_margin_top(round(PLATE_PADDING - TICK_TOP_INSET))
             column.set_margin_bottom(PLATE_PADDING)
             knob = Knob(key, maximum=maximums[key], travel_px=travel)
             caption = Gtk.Label(label=key.upper())
@@ -1194,11 +1353,19 @@ class Grille(Gtk.DrawingArea):
         super().__init__()
         self._background = None
         self._background_size = None
-        # 140 et non 96 : sur une facade d'ampli la toile DOMINE, le panneau de
+        # 152 et non 96 : sur une facade d'ampli la toile DOMINE, le panneau de
         # commandes n'est qu'un bandeau. A 96 la plaque (123 px) etait plus haute
         # que la toile et l'ensemble se lisait comme une barre d'outils posee sur
-        # une bande decorative. A 140 le rapport s'inverse enfin.
-        self.set_size_request(-1, 140)
+        # une bande decorative.
+        #
+        # Monte de 140 a 152 avec l'arrivee de la graduation, qui porte la plaque
+        # a 143 px. A 140 la domination n'etait plus qu'un accident de la taille
+        # par defaut : la toile ne depassait la plaque que grace au mou de
+        # WINDOW_HEIGHT, et une police de theme plus grande -- qui gonfle le pied
+        # et la rangee des presets, sans que la fenetre puisse s'agrandir -- aurait
+        # ramene la toile a son minimum, donc SOUS la plaque. A 152 l'inversion
+        # est structurellement impossible, quoi que fasse le theme.
+        self.set_size_request(-1, 152)
         self.connect("draw", self._on_draw)
 
     def _paint_background(self, cr, w, h):

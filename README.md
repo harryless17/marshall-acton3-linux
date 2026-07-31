@@ -49,8 +49,14 @@ marshall-ctl volume 20         # 0..31
 marshall-ctl preset Musique    # Neutre | Films | Musique | Voix / podcast
 ```
 
-The tray icon gives sliders (left click) and presets (right click), and reflects
-the speaker's physical knobs live.
+**Left-click** the tray icon to open a Cairo-drawn Marshall amplifier facade:
+three gold rotary knobs on a brushed brass plate, the four presets, link status,
+an autostart switch and a Quit button. Knobs turn by vertical drag, by the mouse
+wheel (exactly one notch per notch) or with the arrow keys, and they follow the
+speaker's physical knobs live.
+
+The right-click menu still exists but **do not rely on it** — on GNOME 46 it does
+not open at all, which is why everything lives in the window.
 
 **Requires X11** — the applet uses `Gtk.StatusIcon`, which has no Wayland
 equivalent. The CLI works anywhere. The tray extension must be enabled, or the
@@ -68,11 +74,21 @@ Régler le **volume, le bass et le treble** d'une enceinte **Marshall Acton III*
 depuis Linux, sans toucher aux molettes physiques et sans passer par
 l'application mobile Marshall (qui n'existe pas sous Linux).
 
-- une **icône dans la barre système** : clic gauche pour les sliders, clic droit
-  pour le menu et les presets ;
+- une **fenêtre en façade d'amplificateur**, dessinée en Cairo : trois molettes
+  rotatives dorées sur une plaque de laiton, les quatre presets, l'état du lien,
+  l'interrupteur de démarrage automatique et le bouton Quitter. **Clic gauche sur
+  l'icône de la barre système** pour l'ouvrir ;
 - un **CLI**, `marshall-ctl` ;
-- les changements faits sur les molettes de l'enceinte remontent en direct dans
-  l'interface.
+- les changements faits sur les molettes physiques de l'enceinte remontent en
+  direct dans l'interface.
+
+Les molettes se tournent au **glissé vertical**, à la **molette de la souris**
+(exactement un cran par cran) ou aux **flèches du clavier**. Toute la course du
+volume tient en 200 px de geste, celle du bass et du treble en 140.
+
+> Le menu du clic droit sur l'icône existe encore, mais **ne comptez pas
+> dessus** : sur GNOME 46 il ne s'ouvre pas du tout. C'est pourquoi tout est
+> accessible depuis la fenêtre.
 
 Projet personnel, non affilié à Marshall ni à Zound Industries. Le protocole a
 été obtenu par reverse engineering, en partant de

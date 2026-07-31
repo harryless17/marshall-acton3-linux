@@ -169,5 +169,155 @@ class TestMolette(unittest.TestCase):
         self.assertEqual(k.value, 9)
 
 
+def evenement_clic(bouton=1):
+    """Un Gdk.EventButton fabrique. Comme pour la molette, emettre le signal a
+    la main court-circuite la propagation de GTK : aucune fenetre reelle n'est
+    necessaire."""
+    ev = Gdk.Event.new(Gdk.EventType.BUTTON_PRESS)
+    ev.button.button = bouton
+    ev.button.x = 8.0
+    ev.button.y = 8.0
+    return ev
+
+
+def evenement_touche(keyval):
+    ev = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+    ev.key.keyval = keyval
+    return ev
+
+
+@unittest.skipUnless(AFFICHEUR, "aucun Gdk.Display : widget GTK inconstructible")
+class TestLevier(unittest.TestCase):
+    """Le levier de mise en service. La propriete qui compte est la meme que
+    pour Knob : le reflet de l'etat ne doit RIEN emettre, sinon Facade.update --
+    jusqu'a huit fois par seconde tant que la molette physique de l'enceinte
+    tourne -- ferait reecrire le fichier d'autostart en boucle."""
+
+    def faire(self, on=False):
+        levier = ui.Toggle(on=on)
+        recus = []
+        levier.connect("toggled", lambda _w, v: recus.append(v))
+        return levier, recus
+
+    def test_toggle_emet_et_bascule(self):
+        levier, recus = self.faire()
+        self.assertTrue(levier.toggle())
+        self.assertEqual(recus, [True])
+        self.assertTrue(levier.on)
+
+    def test_le_clic_bascule_et_emet(self):
+        levier, recus = self.faire()
+        levier.emit("button-press-event", evenement_clic())
+        self.assertEqual(recus, [True])
+        self.assertTrue(levier.on)
+
+    def test_le_clic_droit_ne_bascule_pas(self):
+        """Le bouton 3 sert au menu contextuel, pas a la commande."""
+        levier, recus = self.faire()
+        levier.emit("button-press-event", evenement_clic(bouton=3))
+        self.assertEqual(recus, [])
+        self.assertFalse(levier.on)
+
+    def test_espace_et_entree_basculent(self):
+        for touche in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            levier, recus = self.faire()
+            levier.emit("key-press-event", evenement_touche(touche))
+            self.assertEqual(recus, [True], f"touche {touche} inerte")
+            self.assertTrue(levier.on)
+
+    def test_une_touche_de_direction_ne_bascule_pas(self):
+        """Ce n'est pas un axe, c'est un etat : les fleches n'ont rien a y faire.
+        Renvoyer False les laisse a la navigation de GTK."""
+        levier, recus = self.faire()
+        levier.emit("key-press-event", evenement_touche(Gdk.KEY_Up))
+        self.assertEqual(recus, [])
+        self.assertFalse(levier.on)
+
+    def test_set_on_silently_nemet_PAS(self):
+        """Le chemin de Facade.update. C'est la raison d'etre de la methode."""
+        levier, recus = self.faire()
+        levier.set_on_silently(True)
+        self.assertEqual(recus, [])
+        self.assertTrue(levier.on, ".on ne suit pas set_on_silently")
+        levier.set_on_silently(False)
+        self.assertEqual(recus, [])
+        self.assertFalse(levier.on)
+
+    def test_set_on_silently_repete_ne_change_rien(self):
+        levier, recus = self.faire(on=True)
+        for _ in range(8):
+            levier.set_on_silently(True)
+        self.assertEqual(recus, [])
+        self.assertTrue(levier.on)
+
+    def test_les_deux_chemins_se_suivent(self):
+        """.on doit rester la seule verite, quel que soit le chemin emprunte."""
+        levier, recus = self.faire()
+        levier.toggle()                    # -> True, emet
+        levier.set_on_silently(False)      # -> False, silencieux
+        levier.toggle()                    # -> True, emet
+        self.assertTrue(levier.on)
+        self.assertEqual(recus, [True, True])
+
+    def test_insensible_ne_bascule_pas(self):
+        levier, recus = self.faire()
+        levier.set_sensitive(False)
+        self.assertFalse(levier.toggle())
+        # GTK ne livre aucun evenement d'entree a un widget insensible, donc ces
+        # deux chemins-la ne sont atteignables qu'en emettant a la main -- ce que
+        # fait ce test. Les gardes sont des ceintures, pas des chemins morts.
+        levier.emit("button-press-event", evenement_clic())
+        levier.emit("key-press-event", evenement_touche(Gdk.KEY_space))
+        self.assertEqual(recus, [])
+        self.assertFalse(levier.on)
+
+    def test_prend_le_focus_et_demande_une_taille(self):
+        levier, _ = self.faire()
+        self.assertTrue(levier.get_can_focus(),
+                        "sans focus, aucun anneau et aucun clavier")
+        # show() est indispensable : cf. TestKnob, GTK 3 rend 0 pour un widget
+        # non visible et non toplevel.
+        levier.show()
+        self.assertGreaterEqual(levier.get_preferred_width()[1], ui.TOGGLE_WIDTH)
+        self.assertGreaterEqual(levier.get_preferred_height()[1],
+                                ui.TOGGLE_HEIGHT)
+
+
+@unittest.skipUnless(AFFICHEUR, "aucun Gdk.Display : widget GTK inconstructible")
+class TestLevierDansLaFacade(unittest.TestCase):
+    """Le contrat que marshall-applet consomme : le nom du signal et la
+    signature de update() ne doivent pas bouger, et une mise a jour programmee
+    ne doit jamais faire reecrire le fichier d'autostart."""
+
+    def faire(self):
+        facade = ui.Facade(["Neutre", "Films"],
+                           {"volume": 31, "bass": 10, "treble": 10})
+        recus = []
+        facade.connect("autostart-toggled", lambda _f, v: recus.append(v))
+        return facade, recus
+
+    def test_update_ne_declenche_aucune_emission(self):
+        facade, recus = self.faire()
+        etat = {"volume": 12, "max_volume": 31, "bass": 5, "treble": 5}
+        for autostart in (True, False, True, True):
+            facade.update(etat, True, {}, "Neutre", autostart)
+        self.assertEqual(recus, [],
+                         "update() a emis autostart-toggled : le fichier "
+                         "d'autostart serait reecrit ~8 fois par seconde")
+
+    def test_update_reflete_bien_l_etat_sur_le_levier(self):
+        facade, _ = self.faire()
+        etat = {"volume": 12, "max_volume": 31, "bass": 5, "treble": 5}
+        facade.update(etat, True, {}, "Neutre", True)
+        self.assertTrue(facade.autostart.on)
+        facade.update(etat, True, {}, "Neutre", False)
+        self.assertFalse(facade.autostart.on)
+
+    def test_un_geste_sur_le_levier_emet_bien(self):
+        facade, recus = self.faire()
+        facade.autostart.toggle()
+        self.assertEqual(recus, [True])
+
+
 if __name__ == "__main__":
     unittest.main()

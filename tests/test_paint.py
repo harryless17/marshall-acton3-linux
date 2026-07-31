@@ -231,6 +231,94 @@ class TestGraduationDeLaMolette(unittest.TestCase):
         self.assertEqual(dehors, 0, f"{dehors} pixels d'encre au-dela de l'arc")
 
 
+class TestPeintureDuLevier(unittest.TestCase):
+    """Le levier de mise en service. Ce qui se teste ici, c'est qu'il peint et
+    que les deux positions ne donnent pas le meme dessin -- un levier dont on ne
+    voit pas la position ne sert a rien."""
+
+    TAILLES_LEVIER = ((ui.TOGGLE_WIDTH, ui.TOGGLE_HEIGHT), (16, 20), (60, 80))
+
+    def test_les_deux_etats_et_les_deux_sensibilites_peignent(self):
+        for w, h in self.TAILLES_LEVIER:
+            for on in (True, False):
+                for actif in (True, False):
+                    s, cr = surface_et_contexte(w, h)
+                    ui.paint_toggle(cr, 0, 0, w, h, on, actif=actif)
+                    self.assertTrue(
+                        a_peint_quelque_chose(s),
+                        f"rien de peint en {w}x{h} on={on} actif={actif}")
+
+    def test_haut_et_bas_ne_donnent_pas_le_meme_dessin(self):
+        rendus = []
+        for on in (True, False):
+            s, cr = surface_et_contexte(ui.TOGGLE_WIDTH, ui.TOGGLE_HEIGHT)
+            ui.paint_toggle(cr, 0, 0, ui.TOGGLE_WIDTH, ui.TOGGLE_HEIGHT, on)
+            s.flush()
+            rendus.append(bytes(s.get_data()))
+        self.assertNotEqual(rendus[0], rendus[1],
+                            "le levier ne bascule pas : les deux etats sont "
+                            "peints a l'identique")
+
+    def test_le_levier_bascule_bien_de_part_et_d_autre_du_milieu(self):
+        """Plus fort qu'une simple difference : la MASSE d'encre claire doit
+        changer de moitie. Un levier qui ne ferait que changer de teinte, ou
+        qu'un dessin symetrique, passerait le test precedent."""
+        w, h = ui.TOGGLE_WIDTH, ui.TOGGLE_HEIGHT
+        clair = {}
+        for on in (True, False):
+            s, cr = surface_et_contexte(w, h)
+            ui.paint_toggle(cr, 0, 0, w, h, on)
+            s.flush()
+            octets, pas = s.get_data(), s.get_stride()
+            haut = bas = 0
+            for y in range(h):
+                for x in range(w):
+                    o = y * pas + x * 4
+                    # ARGB32 pre-multiplie, ordre machine : BGRA. Le seuil
+                    # attrape le dome et le haut du fut, pas le laiton median.
+                    if octets[o + 3] > 200 and octets[o + 2] > 205:
+                        if y < h / 2:
+                            haut += 1
+                        else:
+                            bas += 1
+            clair[on] = (haut, bas)
+        self.assertGreater(clair[True][0], clair[True][1] * 1.5,
+                           f"allume, l'encre claire n'est pas en haut : {clair}")
+        self.assertGreater(clair[False][1], clair[False][0] * 1.5,
+                           f"eteint, l'encre claire n'est pas en bas : {clair}")
+
+    def test_inactif_differe_de_actif(self):
+        rendus = []
+        for actif in (True, False):
+            s, cr = surface_et_contexte(ui.TOGGLE_WIDTH, ui.TOGGLE_HEIGHT)
+            ui.paint_toggle(cr, 0, 0, ui.TOGGLE_WIDTH, ui.TOGGLE_HEIGHT, True,
+                            actif=actif)
+            s.flush()
+            rendus.append(bytes(s.get_data()))
+        self.assertNotEqual(rendus[0], rendus[1],
+                            "le levier hors service est identique au levier "
+                            "en service")
+
+    def test_ne_deborde_pas_de_sa_boite(self):
+        """L'ombre portee du dome frole le bord de la platine a 1,3 px : sans
+        l'ecretage elle baverait sur le tolex du pied. On peint donc dans une
+        surface plus grande et on exige que la marge reste vierge."""
+        w, h, marge = ui.TOGGLE_WIDTH, ui.TOGGLE_HEIGHT, 6
+        for on in (True, False):
+            s, cr = surface_et_contexte(w + 2 * marge, h + 2 * marge)
+            ui.paint_toggle(cr, marge, marge, w, h, on)
+            s.flush()
+            octets, pas = s.get_data(), s.get_stride()
+            dehors = 0
+            for y in range(h + 2 * marge):
+                for x in range(w + 2 * marge):
+                    dedans = (marge <= x < marge + w and marge <= y < marge + h)
+                    if not dedans and octets[y * pas + x * 4 + 3] > 0:
+                        dehors += 1
+            self.assertEqual(dehors, 0,
+                             f"{dehors} pixels peints hors de la boite (on={on})")
+
+
 class TestGlypheM(unittest.TestCase):
     """Le M de l'icone. La contrainte reelle est 16 px : GNOME rend les icones
     de barre petites, et un glyphe qui ne survit pas a cette taille ne sert a

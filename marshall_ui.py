@@ -1123,6 +1123,300 @@ class Knob(Gtk.DrawingArea):
         return False
 
 
+# -- le levier de mise en service -----------------------------------------
+# La commande POWER d'une Acton III n'est pas un interrupteur logiciel : c'est un
+# petit levier dore MOLETE qui traverse une fente sombre percee dans le laiton,
+# en haut pour allumer. C'est ce qu'on dessine ici, a la place du Gtk.Switch qui
+# arrivait dans la couleur d'accent de la session -- un violet Yaru -- et
+# restait, meme repeint en laiton par la feuille de style, la seule piece de la
+# fenetre a ne pas appartenir a l'objet.
+#
+# 28 x 34, et le 34 n'est pas un choix libre : c'est exactement la hauteur que le
+# bouton "Quitter" demande deja au pied (mesure), donc le levier tient sans faire
+# grandir la bande d'un pixel. Un pixel de plus et il agrandirait la fenetre pour
+# lui seul. On prend tout ce qui est gratuit, parce que la lisibilite de ce dessin
+# se joue entierement a 1:1 dans un carre de 30 px : ce qui se lit a l'oeil, c'est
+# la POSITION du dome clair, et elle a besoin de course.
+TOGGLE_WIDTH = 28
+TOGGLE_HEIGHT = 34
+# Vide reserve autour de la platine pour l'anneau de focus, qui se pose donc au
+# bord de l'allocation sans mordre sur le laiton.
+TOGGLE_INSET = 2
+
+# Rampe du dome du levier : celle de paint_knob, reduite a ses trois bornes. Un
+# dome de 8 px de diametre ne peut pas resoudre cinq arrets -- les deux
+# intermediaires tombent a moins d'un pixel l'un de l'autre -- mais c'est bien la
+# meme famille de laiton, et c'est ce qui fait que le levier et les molettes se
+# lisent comme le meme metal.
+TOGGLE_DOME = ((0.00, (0.980, 0.949, 0.831)),
+               (0.46, (0.776, 0.635, 0.259)),
+               (1.00, (0.298, 0.239, 0.110)))
+# Rampe TRANSVERSALE du fut, sombre aux deux bords et claire un peu a gauche du
+# milieu : c'est elle, et pas le contour, qui fait lire un cylindre. Le pic est a
+# 0.38 et non a 0.50 parce que toute la facade est eclairee du haut a gauche, cf.
+# le point chaud du dome de paint_knob.
+TOGGLE_SHAFT = ((0.00, (0.298, 0.239, 0.110)),
+                (0.20, (0.741, 0.604, 0.243)),
+                (0.38, (0.980, 0.949, 0.831)),
+                (0.68, (0.757, 0.616, 0.251)),
+                (1.00, (0.325, 0.263, 0.125)))
+
+
+def paint_toggle(cr, x, y, w, h, on, actif=True):
+    """Le levier dore dans sa fente, dans une boite w x h. HAUT = en service.
+
+    Ce qui fait qu'il TRAVERSE la plaque au lieu d'y etre pose, et c'est tout
+    l'enjeu du dessin :
+
+    - la fente est peinte AVANT le levier et porte une ombre interne sur tout
+      son pourtour, donc elle se lit comme un trou et non comme un trait ;
+    - le pied du levier est NOYE dans cette ombre, par un degrade ecrete a la
+      fente qui plonge du cote oppose a l'inclinaison. La moitie vide de la
+      fente reste donc noire, et le fut s'y enfonce progressivement ;
+    - le dome, lui, porte une ombre PORTEE sur le laiton, parce qu'il depasse la
+      fente et surplombe la plaque.
+
+    Sans le premier point on obtient un bonbon dore pose sur une rayure ; sans le
+    troisieme, un decalque.
+    """
+    cr.save()
+    # La platine : la MEME peinture que la plaque des molettes. Elle est posee
+    # sur le tolex du pied, donc elle se lit comme l'ecusson d'un interrupteur
+    # visse au dos d'un ampli -- ce qu'elle est.
+    plate_x, plate_y = x + TOGGLE_INSET, y + TOGGLE_INSET
+    plate_w = max(6.0, w - 2 * TOGGLE_INSET)
+    plate_h = max(8.0, h - 2 * TOGGLE_INSET)
+    paint_brass(cr, plate_x, plate_y, plate_w, plate_h, radius=3)
+    # Tout ce qui suit est ECRETE a la platine. Ce n'est pas une precaution
+    # theorique : a la butee le dome arrive a 1,3 px du bord, et son ombre
+    # portee -- un degrade de rayon 1,7 fois le dome -- baverait donc sur le
+    # tolex du pied, ou une ombre n'a aucune raison d'etre.
+    _rounded_path(cr, plate_x, plate_y, plate_w, plate_h, 3)
+    cr.clip()
+
+    slot_w = max(4.0, plate_w * 0.40)
+    slot_h = max(8.0, plate_h * 0.62)
+    sx = plate_x + (plate_w - slot_w) / 2.0
+    sy = plate_y + (plate_h - slot_h) / 2.0
+    rayon_fente = slot_w / 2.0
+    cx = plate_x + plate_w / 2.0
+    pivot = plate_y + plate_h / 2.0
+
+    creux = cairo.LinearGradient(0, sy, 0, sy + slot_h)
+    creux.add_color_stop_rgb(0.0, 0.024, 0.024, 0.024)
+    creux.add_color_stop_rgb(1.0, 0.118, 0.106, 0.078)
+    _rounded_path(cr, sx, sy, slot_w, slot_h, rayon_fente)
+    cr.set_source(creux)
+    cr.fill()
+
+    # Ombre interne : le contour trace ECRETE a la fente, donc seule sa moitie
+    # interieure se voit. Meme procede que l'ombre du caisson dans paint_grille,
+    # et pour la meme raison -- ca donne un degrade vers le bord sans avoir a
+    # construire un flou.
+    cr.save()
+    _rounded_path(cr, sx, sy, slot_w, slot_h, rayon_fente)
+    cr.clip()
+    _rounded_path(cr, sx, sy, slot_w, slot_h, rayon_fente)
+    cr.set_source_rgba(0, 0, 0, 0.72)
+    cr.set_line_width(2.6)
+    cr.stroke()
+    cr.restore()
+
+    # Arete BASSE de la fente eclairee, et elle seule : dans un creux eclaire par
+    # le haut, c'est la paroi du fond qui recoit la lumiere. Un filet clair pose
+    # tout autour ferait un anneau, donc un objet POSE sur la plaque.
+    cr.save()
+    cr.set_line_width(1.0)
+    cr.set_source_rgba(1, 0.965, 0.878, 0.30)
+    cr.arc(cx, sy + slot_h - rayon_fente, rayon_fente + 0.5,
+           math.radians(20), math.radians(160))
+    cr.stroke()
+    cr.restore()
+
+    sens = -1.0 if on else 1.0
+    # Proportions reglees sur planche a 1:1 puis en x5, cf. les essais : un fut a
+    # 0.74 de la fente laisse trop de noir de chaque cote et le levier flotte
+    # dedans, un fut a 0.90 la bouche et la fente cesse de se lire comme un trou.
+    shaft_w = slot_w * 0.82
+    longueur = slot_h * 0.44
+    # Dome nettement plus large que le fut : c'est la forme d'une poignee de
+    # manette, et a cette taille c'est aussi le seul detail qui porte l'etat. A
+    # 0.62 il ne se distingue plus du fut, a 0.76 il tourne au champignon.
+    dome_r = shaft_w * 0.70
+    bout = pivot + sens * longueur
+    # Le pied repart LEGEREMENT du cote oppose, sinon le fut s'arreterait pile au
+    # pivot et on verrait sa section au milieu de la fente. Juste 0.06 : au-dela,
+    # le levier empiete sur la moitie vide de la fente, et c'est cette moitie
+    # noire qui dit de quel cote il est bascule.
+    pied = pivot - sens * slot_h * 0.06
+
+    # Ombre portee du levier sur le laiton, avant lui. Degradee et non pleine,
+    # meme raison que l'ombre de paint_knob : un aplat decale ne donne qu'un
+    # croissant a bord net, qui se lit comme un defaut de trace.
+    ombre = cairo.RadialGradient(cx + 1.0, bout + 1.2, dome_r * 0.5,
+                                 cx + 1.0, bout + 1.2, dome_r * 1.7)
+    ombre.add_color_stop_rgba(0, 0, 0, 0, 0.55)
+    ombre.add_color_stop_rgba(1, 0, 0, 0, 0.0)
+    cr.set_source(ombre)
+    cr.arc(cx + 1.0, bout + 1.2, dome_r * 1.7, 0, 2 * math.pi)
+    cr.fill()
+
+    fut = cairo.LinearGradient(cx - shaft_w / 2.0, 0, cx + shaft_w / 2.0, 0)
+    for pos, rgb in TOGGLE_SHAFT:
+        fut.add_color_stop_rgb(pos, *rgb)
+    cr.save()
+    cr.set_line_cap(cairo.LINE_CAP_ROUND)
+    cr.set_line_width(shaft_w)
+    cr.set_source(fut)
+    cr.move_to(cx, pied)
+    cr.line_to(cx, bout)
+    cr.stroke()
+
+    # Moletage : des rainures PERPENDICULAIRES au fut, par paires sombre puis
+    # claire. Une seule serie sombre donne des traits graves, pas un moletage --
+    # il faut le creux ET la crete, exactement comme le brossage de paint_brass.
+    # Trois rainures : sur les 9,3 px de fut visible il n'y a pas la place d'en
+    # poser plus sans que les paires se touchent, et deux paires collees ne font
+    # plus qu'une bande grise.
+    cr.set_line_cap(cairo.LINE_CAP_BUTT)
+    cr.set_line_width(0.9)
+    demi = shaft_w * 0.40
+    for i in range(3):
+        yy = pied + (bout - pied) * (0.28 + 0.22 * i)
+        for decalage, rgba in ((0.0, (0, 0, 0, 0.42)),
+                               (0.9 * sens, (1, 0.976, 0.898, 0.34))):
+            cr.set_source_rgba(*rgba)
+            cr.move_to(cx - demi, yy + decalage)
+            cr.line_to(cx + demi, yy + decalage)
+            cr.stroke()
+    cr.restore()
+
+    dome = cairo.RadialGradient(cx - dome_r * 0.34, bout - dome_r * 0.40,
+                                max(0.4, dome_r * 0.12), cx, bout, dome_r)
+    for pos, rgb in TOGGLE_DOME:
+        dome.add_color_stop_rgb(pos, *rgb)
+    cr.set_source(dome)
+    cr.arc(cx, bout, dome_r, 0, 2 * math.pi)
+    cr.fill()
+
+    # Le pied noye dans la fente. Le degrade est oppose a l'inclinaison : la
+    # moitie vide de la fente reste noire, et le fut s'y enfonce.
+    cr.save()
+    _rounded_path(cr, sx, sy, slot_w, slot_h, rayon_fente)
+    cr.clip()
+    noyage = cairo.LinearGradient(0, sy, 0, sy + slot_h)
+    haut, bas = (0.0, 0.78) if on else (0.78, 0.0)
+    noyage.add_color_stop_rgba(0.0, 0, 0, 0, haut)
+    noyage.add_color_stop_rgba(1.0, 0, 0, 0, bas)
+    cr.set_source(noyage)
+    cr.paint()
+    cr.restore()
+
+    if not actif:
+        # Meme voile que paint_knob, et pour la meme raison : le levier reste
+        # lisible mais visiblement hors service. L'ecretage a la platine est
+        # deja pose plus haut, donc un simple paint() suffit.
+        cr.set_source_rgba(0.14, 0.145, 0.165, 0.56)
+        cr.paint()
+    cr.restore()
+
+
+class Toggle(Gtk.DrawingArea):
+    """Le levier a deux positions. Meme contrat que Knob : il n'appelle jamais
+    rien, il emet, et c'est l'applet qui ecrit.
+
+    La distinction set_on_silently / toggle est la meme que
+    set_value_silently / step, et pour la meme raison concrete : Facade.update
+    passe ici jusqu'a huit fois par seconde tant que la molette PHYSIQUE de
+    l'enceinte tourne, et chaque emission de "toggled" ferait reecrire le fichier
+    d'autostart.
+    """
+
+    __gsignals__ = {
+        "toggled": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
+    }
+
+    def __init__(self, on=False):
+        super().__init__()
+        self._on = bool(on)
+        self.set_size_request(TOGGLE_WIDTH, TOGGLE_HEIGHT)
+        self.set_can_focus(True)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
+                        | Gdk.EventMask.KEY_PRESS_MASK)
+        self.connect("draw", self._on_draw)
+        self.connect("button-press-event", self._on_press)
+        self.connect("key-press-event", self._on_key)
+
+    @property
+    def on(self):
+        return self._on
+
+    def toggle(self):
+        """Bascule sur GESTE de l'utilisateur, et emet. Rend True si ca a bascule.
+
+        Le controle de sensibilite porte ICI et non seulement dans les
+        gestionnaires d'evenements, exactement comme Knob.step : GTK ne livre
+        aucun evenement d'entree a un widget insensible (verifie), donc les gardes
+        des gestionnaires ne servent qu'aux evenements emis a la main. C'est cette
+        methode-ci qui est appelable depuis du code, ou rien ne filtre.
+        """
+        if not self.get_sensitive():
+            return False
+        self._on = not self._on
+        self.queue_draw()
+        self.emit("toggled", self._on)
+        return True
+
+    def set_on_silently(self, on):
+        """Reflet de l'etat lu ailleurs : ne doit PAS emettre. Emettre ici
+        ferait reecrire le fichier d'autostart a chaque rafraichissement."""
+        on = bool(on)
+        if on != self._on:
+            self._on = on
+            self.queue_draw()
+
+    def _on_draw(self, _w, cr):
+        alloc = self.get_allocation()
+        paint_toggle(cr, 0, 0, alloc.width, alloc.height, self._on,
+                     actif=self.get_sensitive())
+        if self.has_visible_focus():
+            # Meme anneau que Knob, en rectangle arrondi puisque la piece l'est :
+            # il se pose dans les TOGGLE_INSET px que paint_toggle laisse libres
+            # autour de la platine.
+            cr.save()
+            cr.set_source_rgba(*GOLD_PIPING, 0.9)
+            cr.set_line_width(2)
+            _rounded_path(cr, 1, 1, alloc.width - 2, alloc.height - 2, 4)
+            cr.stroke()
+            cr.restore()
+        return False
+
+    def _on_press(self, _w, ev):
+        """N'importe ou sur la piece : la platine entiere est la commande.
+        Viser une fente de 10 px de large a la souris serait une punition."""
+        if not self.get_sensitive() or ev.button != 1:
+            return False
+        # grab_focus AVANT la bascule, et sous la garde de sensibilite : donner le
+        # focus a un widget insensible le retirerait au precedent sans le rendre.
+        self.grab_focus()
+        self.toggle()
+        return True
+
+    def _on_key(self, _w, ev):
+        # space et Return, les deux touches dont GTK fait des activations sur ses
+        # propres boutons. Pas de fleches : ce n'est pas un axe, c'est un etat.
+        #
+        # La garde de sensibilite rend False plutot que d'avaler la touche : un
+        # widget hors service ne doit pas retenir l'espace, que la fenetre peut
+        # vouloir router ailleurs.
+        if not self.get_sensitive():
+            return False
+        if ev.keyval in (Gdk.KEY_space, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self.toggle()
+            return True
+        return False
+
+
 # -- assemblage -----------------------------------------------------------
 # Taille par defaut de la fenetre. Ce n'est PAS un cadrage : la facade exige
 # 461x423 avec la police du theme de cette machine (mesure hors ecran sur une
@@ -1216,21 +1510,11 @@ CSS = b"""
   color: #ecd79c; background-image: none;
   background-color: rgba(201,162,39,0.20);
 }
-/* L'interrupteur du theme arrive dans la couleur d'accent de la session -- ici
-   un violet Yaru, qui sur du laiton et du tolex noir est la seule tache de
-   couleur etrangere de la fenetre. On le repeint en laiton. Priorite
-   APPLICATION, donc ces regles passent devant celles du theme. */
-.marshall-footer switch {
-  background-image: none; background-color: rgba(0,0,0,0.55);
-  border: 1px solid rgba(201,162,39,0.30);
-}
-.marshall-footer switch:checked {
-  background-image: none; background-color: #bf9a1f; border-color: #8d6f1b;
-}
-.marshall-footer switch slider {
-  background-image: none; background-color: #ded0aa;
-  border: 1px solid rgba(0,0,0,0.45);
-}
+/* Aucune regle pour `switch` : le pied ne contient plus de Gtk.Switch, mais un
+   Toggle dessine en Cairo, cf. paint_toggle. Ces trois regles repeignaient en
+   laiton l'interrupteur du theme, qui arrivait sinon dans la couleur d'accent
+   de la session -- un violet Yaru. Le probleme est resolu a la racine : la
+   piece n'appartient plus au theme. */
 """
 
 _css_installed = False
@@ -1471,8 +1755,11 @@ class Facade(Gtk.Box):
 
         footer = Gtk.Box(spacing=8)
         footer.get_style_context().add_class("marshall-footer")
-        self.autostart = Gtk.Switch()
-        self.autostart.connect("notify::active", self._on_autostart)
+        # Un levier peint, et non un Gtk.Switch : cf. l'en-tete de paint_toggle.
+        # L'attribut garde son nom, et le signal "autostart-toggled" sa signature
+        # -- marshall-applet s'y branche et n'a rien a savoir de ce changement.
+        self.autostart = Toggle()
+        self.autostart.connect("toggled", self._on_autostart)
         footer.pack_start(self.autostart, False, False, 0)
         caption = Gtk.Label(label="Démarrer avec la session", xalign=0)
         caption.get_style_context().add_class("marshall-cap")
@@ -1502,10 +1789,15 @@ class Facade(Gtk.Box):
             return
         self.emit("knob-changed", key, value)
 
-    def _on_autostart(self, switch, _param):
+    def _on_autostart(self, _toggle, actif):
+        # La garde _loading reste, meme si Toggle ne peut plus emettre depuis
+        # set_on_silently : update() est appelee dans les deux sens et le cout
+        # d'une ceinture est nul. Le Gtk.Switch, lui, reemettait
+        # notify::active depuis set_active(), et c'est ce qui rendait la garde
+        # indispensable a l'epoque.
         if self._loading:
             return
-        self.emit("autostart-toggled", switch.get_active())
+        self.emit("autostart-toggled", bool(actif))
 
     def update(self, state, connected, pending, active_preset, autostart):
         """Mise a jour programmee : ne doit declencher AUCUNE ecriture.
@@ -1547,6 +1839,6 @@ class Facade(Gtk.Box):
                 etat_context.add_class("marshall-etat-off")
             # Toujours sensible : griser l'etat normal le fait lire comme une
             # panne. Le libelle porte l'etat, le clic est sans effet connecte.
-            self.autostart.set_active(bool(autostart))
+            self.autostart.set_on_silently(autostart)
         finally:
             self._loading = previous

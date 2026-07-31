@@ -1022,10 +1022,53 @@ TICK_DARK = (0.086, 0.071, 0.043)
 # deconnectee ne doit pas avoir l'air de jouer.
 TICK_RED_OFF = (0.404, 0.396, 0.412)
 
+# -- les deux bornes chiffrees de l'arc ------------------------------------
+# Le panneau reel imprime un "0" et un "10" de part et d'autre de l'arc, en bas a
+# gauche et en bas a droite de chaque molette. On les pose, et il faut trancher un
+# probleme d'HONNETETE au passage : le volume compte 32 crans en interne, donc un
+# "10" imprime au bout de sa course serait un mensonge, et pas un mensonge
+# inoffensif -- le chiffre pose SOUS la molette, lui, affiche la valeur interne,
+# et une plaque qui annonce une echelle 0..10 sous un chiffre qui monte a 31 se
+# contredit. L'oeil croit ce qui est imprime.
+#
+# On imprime donc le MAXIMUM REEL de la molette : 0..10 aux graves et aux aigus,
+# ou c'est exactement ce que porte le panneau reel, et 0..31 au volume. Les deux
+# autres options ont ete pesees. "0" / "MAX" met un mot au milieu de chiffres et
+# fait perdre aux deux molettes d'EQ leur echelle juste, la seule qu'on ait le
+# droit d'ecrire. Ne rien imprimer sur le volume laisse une molette sur trois sans
+# bornes, et un arc avec un "0" solitaire se lit comme un dessin inacheve. Le
+# maximum du volume est d'ailleurs LU sur l'enceinte (set_maximum_silently), donc
+# la borne suit le materiel au lieu de le supposer.
+#
+# 16 degres au-dela de la butee : les reperes de butee occupent l'angle exact de
+# la course, et un chiffre pose dessus se lirait comme un trait de plus. Compare
+# en x3 a 12, 15 et 20 degres -- a 12 le "31" vient toucher le dernier repere, a
+# 20 les deux bornes se rapprochent du bas et cessent de FLANQUER l'arc. A 16 il
+# reste 9,2 px d'arc entre l'axe du repere et le centre du chiffre, dont 6,7 de
+# vide franc.
+TICK_LABEL_ANGLE = math.radians(16)
+# Rayon du centre du chiffre, en fraction du rayon du dome. 1.18 le pose entre le
+# pied et la tete des reperes (1.10 et 1.39), donc il ne deborde pas de la boite
+# de la molette, et l'anneau de focus -- a 1.39 R + 2,2 px, soit 41,1 -- passe
+# DEHORS sans le traverser : le coin le plus lointain d'un "31" tombe a 37,7.
+TICK_LABEL_RADIUS = 1.18
+# Corps du chiffre, en fraction du rayon : 8,4 px a r28. Subordonne au chiffre de
+# la valeur (10 pt, ~13 px) et un cran sous le libelle .marshall-cap (8 pt,
+# ~11 px) : sur la plaque reelle ces bornes sont la plus petite encre du panneau.
+TICK_LABEL_SIZE = 0.30
 
-def paint_knob_ticks(cr, cx, cy, radius, fraction, actif=True):
+
+def paint_knob_ticks(cr, cx, cy, radius, fraction, actif=True, *,
+                     maximum=None):
     """La graduation autour d'une molette : rouge jusqu'a la valeur, sombre
     au-dela.
+
+    `maximum` est le nombre imprime au bout HAUT de l'arc, "0" tenant l'autre
+    bout. Il est facultatif et vaut None par defaut, auquel cas AUCUNE borne n'est
+    imprimee : la fonction reste appelable par qui ne connait pas l'echelle, et
+    surtout elle n'invente pas un "10" que rien ne garantit -- cf. le pave de
+    commentaire de TICK_LABEL_ANGLE. Knob._on_draw passe toujours le maximum de
+    son modele.
 
     A appeler AVANT paint_knob, et pas apres : l'ombre portee du dome tombe
     alors sur le pied des reperes, ce qui pose la graduation SOUS la molette --
@@ -1085,6 +1128,31 @@ def paint_knob_ticks(cr, cx, cy, radius, fraction, actif=True):
             cr.move_to(cx + ux * inner + decalage, cy + uy * inner + decalage)
             cr.line_to(cx + ux * outer + decalage, cy + uy * outer + decalage)
             cr.stroke()
+
+    if maximum is not None:
+        # Les bornes chiffrees. Elles ne s'eteignent PAS hors connexion, a
+        # l'inverse du rouge : c'est de l'encre sur le laiton, la course reste
+        # imprimee que l'enceinte reponde ou non -- meme regle que les reperes
+        # sombres.
+        cr.select_font_face("sans", cairo.FONT_SLANT_NORMAL,
+                            cairo.FONT_WEIGHT_BOLD)
+        cr.set_font_size(max(6.0, radius * TICK_LABEL_SIZE))
+        rayon = radius * TICK_LABEL_RADIUS
+        for angle, texte in ((ANGLE_MIN - TICK_LABEL_ANGLE, "0"),
+                             (ANGLE_MAX + TICK_LABEL_ANGLE, str(int(maximum)))):
+            ux, uy = math.sin(angle), -math.cos(angle)
+            # On centre sur l'encre REELLE du texte et non sur son avance : un
+            # "0" et un "31" n'ont ni la meme largeur ni le meme centre optique,
+            # et deux bornes qui ne seraient pas symetriques par rapport a l'axe
+            # de la molette se verraient immediatement.
+            bx, by, bw, bh = cr.text_extents(texte)[:4]
+            px = cx + ux * rayon - bw / 2.0 - bx
+            py = cy + uy * rayon - bh / 2.0 - by
+            for decalage, rgba in ((0.7, (0, 0, 0, 0.38)),
+                                   (0.0, TICK_DARK + (0.96,))):
+                cr.set_source_rgba(*rgba)
+                cr.move_to(px + decalage, py + decalage)
+                cr.show_text(texte)
     cr.restore()
 
 
@@ -1213,8 +1281,14 @@ class Knob(Gtk.DrawingArea):
         actif = self.get_sensitive()
         # La graduation AVANT le dome : l'ombre portee de la molette doit tomber
         # sur le pied des reperes, cf. paint_knob_ticks.
+        #
+        # Le maximum vient du MODELE et n'est pas fige : set_maximum_silently le
+        # remplace par celui que l'enceinte annonce, donc la borne imprimee au
+        # bout de l'arc suit le materiel. C'est tout l'interet de le passer ici
+        # plutot que de l'ecrire dans paint_knob_ticks.
         paint_knob_ticks(cr, alloc.width / 2, alloc.height / 2, rayon,
-                         self._m.fraction, actif=actif)
+                         self._m.fraction, actif=actif,
+                         maximum=self._m.maximum)
         paint_knob(cr, alloc.width / 2, alloc.height / 2, rayon,
                    self._m.fraction, actif=actif)
         if self.has_visible_focus():
@@ -1351,16 +1425,19 @@ class Knob(Gtk.DrawingArea):
 # restait, meme repeint en laiton par la feuille de style, la seule piece de la
 # fenetre a ne pas appartenir a l'objet.
 #
-# 28 x 34, et le 34 n'est pas un choix libre : c'est exactement la hauteur que le
-# bouton "Quitter" demande deja au pied (mesure), donc le levier tient sans faire
-# grandir la bande d'un pixel. Un pixel de plus et il agrandirait la fenetre pour
-# lui seul. On prend tout ce qui est gratuit, parce que la lisibilite de ce dessin
-# se joue entierement a 1:1 dans un carre de 30 px : ce qui se lit a l'oeil, c'est
-# la POSITION du dome clair, et elle a besoin de course.
-TOGGLE_WIDTH = 28
-TOGGLE_HEIGHT = 34
-# Vide reserve autour de la platine pour l'anneau de focus, qui se pose donc au
-# bord de l'allocation sans mordre sur le laiton.
+# 32 x 44, monte de 28 x 34. Le 34 n'etait pas un choix libre : c'etait la hauteur
+# du bouton "Quitter", que le levier partageait au pied de la fenetre, et un pixel
+# de plus aurait agrandi la bande pour lui seul. Cette contrainte a DISPARU avec le
+# demenagement : le levier vit maintenant dans une boite de calage de 86 px sur la
+# plaque, la hauteur d'une molette, et il ne paye plus rien. On lui rend donc de la
+# course, puisque ce qui se lit a l'oeil est la POSITION du dome clair. Compare a
+# 1:1 sur laiton contre 34, 52 et 56 : a 34 le levier est timide a cote d'une
+# molette de 56 px de diametre, a 52 il s'allonge en tige. A 44 il fait les trois
+# quarts du diametre de la molette, le rapport qu'a la commande POWER reelle.
+TOGGLE_WIDTH = 32
+TOGGLE_HEIGHT = 44
+# Vide reserve au bord de la boite pour l'anneau de focus, qui se pose donc au bord
+# de l'allocation sans mordre sur la fente.
 TOGGLE_INSET = 2
 
 # Rampe du dome du levier : celle de paint_knob, reduite a ses trois bornes. Un
@@ -1398,19 +1475,25 @@ def paint_toggle(cr, x, y, w, h, on, actif=True):
 
     Sans le premier point on obtient un bonbon dore pose sur une rayure ; sans le
     troisieme, un decalque.
+
+    PLUS DE PLATINE sous le levier depuis qu'il est monte sur la plaque. Elle
+    peignait ici le meme laiton que BrassPanel, et c'etait juste TANT QUE le
+    levier vivait au pied, sur le tolex : elle s'y lisait comme l'ecusson d'un
+    interrupteur visse au dos d'un ampli. Sur la plaque elle n'est plus qu'un
+    rectangle de laiton biseaute POSE sur du laiton -- un autocollant, verifie a
+    1:1 et en x4 -- alors que le panneau reel perce sa fente directement dans la
+    plaque. La fonction ne peint donc plus que la fente et le levier ; ce qui est
+    dessous appartient a l'appelant.
     """
     cr.save()
-    # La platine : la MEME peinture que la plaque des molettes. Elle est posee
-    # sur le tolex du pied, donc elle se lit comme l'ecusson d'un interrupteur
-    # visse au dos d'un ampli -- ce qu'elle est.
     plate_x, plate_y = x + TOGGLE_INSET, y + TOGGLE_INSET
     plate_w = max(6.0, w - 2 * TOGGLE_INSET)
     plate_h = max(8.0, h - 2 * TOGGLE_INSET)
-    paint_brass(cr, plate_x, plate_y, plate_w, plate_h, radius=3)
-    # Tout ce qui suit est ECRETE a la platine. Ce n'est pas une precaution
+    # Tout ce qui suit est ECRETE a cette boite. Ce n'est pas une precaution
     # theorique : a la butee le dome arrive a 1,3 px du bord, et son ombre
-    # portee -- un degrade de rayon 1,7 fois le dome -- baverait donc sur le
-    # tolex du pied, ou une ombre n'a aucune raison d'etre.
+    # portee -- un degrade de rayon 1,7 fois le dome -- baverait donc au-dela de
+    # l'allocation du widget, sur le laiton nu de la plaque et sous l'anneau de
+    # focus.
     _rounded_path(cr, plate_x, plate_y, plate_w, plate_h, 3)
     cr.clip()
 
@@ -1646,14 +1729,16 @@ class Toggle(Gtk.DrawingArea):
 # dictee par la rangee des presets plus le bouton d'etat ; la hauteur par la
 # somme des quatre bandes.
 #
-# 447 en hauteur, monte de 425, et les 22 px sont le prix du creux de la plaque :
-# la bande passe de 143 a 153 px pour loger les RECESS_SPREAD px de tolex que le
-# creux occupe de chaque cote, et la toile suit pour rester dominante (cf.
-# Grille). Detail mesure a 447 : bande de la plaque 153, toile 166, rangee 34,
-# pied 34. La LARGEUR ne bouge pas -- le minimum reste dicte par la rangee des
-# presets a 461, et trois molettes de 86 ne font que 258 + 24 de marge.
-WINDOW_WIDTH = 470
-WINDOW_HEIGHT = 447
+# 530 x 401, contre 470 x 425 avant ces trois changements. La fenetre s'est donc
+# ELARGIE de 60 px et RACCOURCIE de 24, et les deux mouvements viennent de la meme
+# decision : le pied a fusionne avec la rangee des presets (cf. Facade.__init__),
+# ce qui rend une bande de 46 px et reclame 47 px de large.
+#
+# Le minimum mesure est 521 x 399, et la largeur n'est plus dictee par la meme
+# piece qu'avant : la rangee fusionnee demande 497, la plaque 450. Detail mesure a
+# 530 x 401 : bande de la plaque 153, toile 166, rangee 34.
+WINDOW_WIDTH = 530
+WINDOW_HEIGHT = 401
 MARGIN = 12
 # Laiton visible entre le bord de la plaque et le bloc molette + libelle +
 # valeur. Descendu de 16 a 12 en meme temps que la graduation arrivait : l'arc
@@ -1662,6 +1747,29 @@ MARGIN = 12
 # soit exactement l'inversion que la Grille cherche a eviter. A 12 la plaque
 # retombe a 143 et la toile la domine de nouveau.
 PLATE_PADDING = 12
+
+# -- la colonne du levier, au bout droit de la plaque ----------------------
+# Le levier de mise en service vit maintenant SUR la plaque, comme la commande
+# POWER du panneau reel, et non plus au pied de la fenetre. Deux chiffres
+# gouvernent son logement, et tous deux sont contraints par la CAPSULE : plus on
+# descend vers le bas de la plaque, plus le bord se rapproche, et le libelle
+# grave est a la fois la piece la plus large de la colonne et la plus basse.
+#
+# 16 px de marge de bout, et le calcul : le libelle occupe la bande de 25,5 a
+# 39,5 px sous l'axe de la plaque, et a 39,5 px de l'axe le bord de la capsule
+# rentre de 71,5 - sqrt(71,5^2 - 39,5^2) = 11,9 px. Releve sur les allocations
+# reelles, l'encre du libelle -- 49 px centres dans les 88 de la colonne --
+# s'arrete a 30,5 px du bord de la plaque, soit 18,6 px de vide franc devant
+# l'arc. Le lettrage ne vient donc pas mourir sur le trait, et la marge tient meme
+# si la police du theme grossit d'un tiers.
+SESSION_INSET = 16
+# 88 px de large, et la cale de gauche fait la meme largeur MARGE COMPRISE pour
+# que le trio de molettes reste centre sur la plaque. C'est la largeur du libelle
+# SESSION (49 px avec la police du theme, mesure) plus de quoi le centrer -- pas
+# la largeur du levier, qui ne fait que 28 : la colonne est dimensionnee par son
+# ECRITURE, comme les colonnes de molettes le sont par leur arc et non par leur
+# dome.
+SESSION_COLUMN = 88
 
 # Les trois registres pilotables, avec leur course de glisse. L'ordre est celui
 # du panneau de commandes de l'enceinte.
@@ -1689,7 +1797,10 @@ CSS = b"""
   font-size: 8pt; font-weight: 600; letter-spacing: 1px;
   color: #3a2c06;
 }
-.marshall-footer .marshall-cap { color: #8d8d92; }
+/* Plus de regle .marshall-footer : il n'y a plus de pied. Les quatre libelles
+   .marshall-cap sont TOUS graves sur le laiton -- VOLUME, BASS, TREBLE et
+   SESSION -- donc un seul brun sombre suffit, la ou il fallait avant un gris
+   pour celui qui vivait sur le tolex. */
 .marshall-val { font-size: 10pt; font-weight: 700; color: #2c2105; }
 .marshall-preset, .marshall-quit {
   font-size: 8pt; font-weight: 600; padding: 4px 9px;
@@ -1798,17 +1909,24 @@ def install_css():
 
 
 class BrassPanel(Gtk.Box):
-    """La plaque de laiton : peint son fond, et porte les trois molettes."""
+    """La plaque de laiton : peint son fond, porte les trois molettes, et le
+    levier de mise en service a son bout droit."""
 
     def __init__(self, maximums):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL,
-                         homogeneous=True)
+        # PLUS homogeneous : la colonne du levier n'a aucune raison de reclamer
+        # la largeur d'une colonne de molette -- 110 px pour un levier de 28. Les
+        # trois molettes gardent leur espacement egal parce qu'elles vivent
+        # maintenant dans une boite interne, elle homogene, qui prend toute la
+        # place laissee par le levier et par la cale qui lui repond.
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
         # AUCUN border_width ici : il rognerait la plaque peinte au lieu de
         # l'encadrer, cf. _cached_background. Le laiton autour du bloc de
         # commandes vient des marges des colonnes.
         self._background = None          # cf. _on_draw
         self._background_size = None
         self.knobs = {}
+        trio = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                       homogeneous=True)
         for key, travel in REGISTERS:
             column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
             # Haut et bas dissymetriques a dessein : la colonne commence par une
@@ -1838,10 +1956,64 @@ class BrassPanel(Gtk.Box):
             column.pack_start(knob, False, False, 0)
             column.pack_start(caption, False, False, 0)
             column.pack_start(value, False, False, 0)
-            self.add(column)
+            trio.add(column)
             self.knobs[key] = knob
             knob._value_label = value
+
+        # La cale de GAUCHE, de la largeur exacte de la colonne du levier. Sans
+        # elle le trio se decalerait de SESSION_COLUMN / 2 vers la gauche, et sur
+        # une capsule ca se voit tout de suite : les deux bouts demi-circulaires
+        # sont le repere de symetrie de la plaque. Le panneau reel centre lui aussi
+        # ses trois molettes, avec l'AUX a un bout et le POWER a l'autre.
+        # SESSION_COLUMN + SESSION_INSET et non SESSION_COLUMN : en GTK 3 une marge
+        # s'ajoute DEHORS de la taille demandee, donc la colonne du levier occupe
+        # bien la somme des deux. Mesure avec la cale a 88 seulement : molettes
+        # centrees en 152,5 / 257,5 / 362, soit un axe du trio a 257,2 pour une
+        # plaque centree en 265 -- les 8 px de biais se voyaient sur la capsule.
+        cale = Gtk.Box()
+        cale.set_size_request(SESSION_COLUMN + SESSION_INSET, -1)
+        self.pack_start(cale, False, False, 0)
+        self.pack_start(trio, True, True, 0)
+        self.pack_end(self._session_column(), False, False, 0)
         self.connect("draw", self._on_draw)
+
+    def _session_column(self):
+        """La quatrieme colonne : le levier au bout droit de la plaque, et son
+        libelle grave dessous.
+
+        SESSION et non POWER, et ce n'est pas de la pudeur : le panneau reel grave
+        POWER parce que ce levier-la coupe l'alimentation de l'enceinte. Celui-ci
+        ne coupe rien du tout, il decide si l'applet se lance avec la session. Lui
+        ecrire POWER serait un decor qui mentirait sur la fonction ; l'infobulle
+        porte la phrase entiere, a un survol."""
+        self.autostart = Toggle()
+        self.autostart.set_tooltip_text("Démarrer avec la session")
+        self.autostart.set_halign(Gtk.Align.CENTER)
+        self.autostart.set_valign(Gtk.Align.CENTER)
+        # Boite de calage a la hauteur EXACTE d'une molette, et c'est ce qui fait
+        # tenir les deux alignements a la fois : le levier, centre dedans, tombe
+        # sur l'axe des molettes, et SESSION tombe sur la meme ligne que VOLUME,
+        # BASS et TREBLE. Les quatre libelles se lisent alors comme une seule
+        # ligne gravee, ce qu'ils sont sur le panneau reel.
+        calage = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        calage.set_size_request(-1, (KNOB_RADIUS + KNOB_MARGIN) * 2)
+        calage.pack_start(self.autostart, True, False, 0)
+
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        column.set_size_request(SESSION_COLUMN, -1)
+        column.set_margin_top(round(PLATE_PADDING - TICK_TOP_INSET)
+                              + RECESS_SPREAD)
+        column.set_margin_bottom(PLATE_PADDING + RECESS_SPREAD)
+        # Marge de bout : le libelle est la piece la plus large de la colonne et
+        # la plus basse, donc c'est lui qui touche le premier l'arc de la capsule.
+        # Cf. SESSION_INSET, le chiffre est calcule.
+        column.set_margin_end(SESSION_INSET)
+        caption = Gtk.Label(label="SESSION")
+        caption.get_style_context().add_class("marshall-cap")
+        caption.set_tooltip_text("Démarrer avec la session")
+        column.pack_start(calage, False, False, 0)
+        column.pack_start(caption, False, False, 0)
+        return column
 
     def _paint_background(self, cr, w, h):
         """La plaque est une CAPSULE encastree, et elle n'occupe pas toute la
@@ -1952,6 +2124,12 @@ class Facade(Gtk.Box):
         bands.pack_start(self.panel, False, False, 0)
         for key, _travel in REGISTERS:
             self.panel.knobs[key].connect("value-changed", self._on_knob, key)
+        # Le levier est desormais une piece de la PLAQUE, comme les molettes, et
+        # c'est la plaque qui le construit. L'attribut garde son nom et designe le
+        # meme objet -- le signal "autostart-toggled" et update() ne changent pas
+        # d'un iota, marshall-applet n'a rien a savoir de ce deplacement.
+        self.autostart = self.panel.autostart
+        self.autostart.connect("toggled", self._on_autostart)
 
         bands.pack_start(Grille(), True, True, 0)
 
@@ -1995,25 +2173,28 @@ class Facade(Gtk.Box):
         # pas, et la fenetre sauterait quand meme.
         self.etat.show_all()
         self.etat.set_size_request(self.etat.get_preferred_width()[1], -1)
-        row.pack_end(self.etat, False, False, 0)
-        bands.pack_start(row, False, False, 0)
-
-        footer = Gtk.Box(spacing=8)
-        footer.get_style_context().add_class("marshall-footer")
-        # Un levier peint, et non un Gtk.Switch : cf. l'en-tete de paint_toggle.
-        # L'attribut garde son nom, et le signal "autostart-toggled" sa signature
-        # -- marshall-applet s'y branche et n'a rien a savoir de ce changement.
-        self.autostart = Toggle()
-        self.autostart.connect("toggled", self._on_autostart)
-        footer.pack_start(self.autostart, False, False, 0)
-        caption = Gtk.Label(label="Démarrer avec la session", xalign=0)
-        caption.get_style_context().add_class("marshall-cap")
-        footer.pack_start(caption, False, False, 0)
+        # UNE SEULE rangee sous la toile, et le pied disparait. Il ne portait plus
+        # que le voyant d'etat et "Quitter" depuis que le levier est monte sur la
+        # plaque, et une bande de 34 px pour deux boutons ne se justifie pas. Les
+        # deux dispositions ont ete MESUREES hors ecran : en gardant un pied, le
+        # minimum de la facade est 474 x 445 -- 474 dicte par la plaque elle-meme,
+        # qui reclame 450, et non plus par la rangee des presets ; en fusionnant,
+        # 521 x 399. L'echange est donc 47 px de large contre 46 px de haut.
+        #
+        # On prend la fusion, et pas seulement parce que la bande etait vide : la
+        # face avant reelle de l'enceinte est nettement plus large que haute
+        # (265 x 170 mm, soit 1,56), la fenetre passe de 1,07 a 1,32, et la capsule
+        # s'allonge de 436 a 496 px pour la meme hauteur -- rapport de 3,05 a 3,47.
+        # C'est ce rapport qui la fait lire comme une capsule plutot que comme un
+        # galet.
+        #
+        # L'ordre des pack_end compte : le premier appele est le plus a droite.
         quit_button = Gtk.Button(label="Quitter")
         quit_button.get_style_context().add_class("marshall-quit")
         quit_button.connect("clicked", lambda _w: self.emit("quit-requested"))
-        footer.pack_end(quit_button, False, False, 0)
-        bands.pack_start(footer, False, False, 0)
+        row.pack_end(quit_button, False, False, 0)
+        row.pack_end(self.etat, False, False, 0)
+        bands.pack_start(row, False, False, 0)
 
         self.connect("draw", self._on_draw)
         self._loading = False

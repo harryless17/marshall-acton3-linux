@@ -500,6 +500,116 @@ class TestGraduationDeLaMolette(unittest.TestCase):
         self.assertEqual(dehors, 0, f"{dehors} pixels d'encre au-dela de l'arc")
 
 
+class TestBornesDeLarc(unittest.TestCase):
+    """Le "0" et le maximum imprimes aux deux bouts de l'arc. Le point qui compte
+    n'est pas leur dessin mais leur HONNETETE : c'est le maximum REEL de la
+    molette qui est grave, jamais un 10 suppose, et rien n'est grave quand
+    l'appelant ne le connait pas."""
+
+    RAYON, COTE = 28, 100
+
+    def peindre(self, maximum):
+        s, cr = surface_et_contexte(self.COTE, self.COTE)
+        ui.paint_brass(cr, 0, 0, self.COTE, self.COTE)
+        ui.paint_knob_ticks(cr, self.COTE / 2, self.COTE / 2, self.RAYON, 0.5,
+                            maximum=maximum)
+        return s
+
+    def zone(self, cote_droit):
+        """Boite autour du centre theorique d'une borne, cf. TICK_LABEL_*.
+
+        Volontairement etroite -- 12 x 12 -- parce que le repere de butee et son
+        ombre passent a 9 px d'arc de la : une boite plus large les compterait et
+        le test ne dirait plus rien du chiffre."""
+        angle = ((ui.ANGLE_MAX + ui.TICK_LABEL_ANGLE) if cote_droit
+                 else (ui.ANGLE_MIN - ui.TICK_LABEL_ANGLE))
+        rayon = self.RAYON * ui.TICK_LABEL_RADIUS
+        cx = self.COTE / 2 + math.sin(angle) * rayon
+        cy = self.COTE / 2 - math.cos(angle) * rayon
+        return int(cx - 6), int(cy - 6), 12, 12
+
+    def octets_de_zone(self, surface, boite):
+        """Les pixels bruts de la boite, pour comparer deux gravures."""
+        surface.flush()
+        o, pas = surface.get_data(), surface.get_stride()
+        morceaux = []
+        for y in range(boite[1], boite[1] + boite[3]):
+            debut = y * pas + boite[0] * 4
+            morceaux.append(bytes(o[debut:debut + boite[2] * 4]))
+        return b"".join(morceaux)
+
+    def encre_sombre(self, surface, boite):
+        surface.flush()
+        o, pas = surface.get_data(), surface.get_stride()
+        compte = 0
+        for y in range(boite[1], boite[1] + boite[3]):
+            for x in range(boite[0], boite[0] + boite[2]):
+                i = y * pas + x * 4
+                if (0.114 * o[i] + 0.587 * o[i + 1] + 0.299 * o[i + 2]) < 60:
+                    compte += 1
+        return compte
+
+    def test_sans_maximum_aucune_borne_nest_gravee(self):
+        """Le defaut, et c'est un choix : mieux vaut pas de borne qu'une borne
+        inventee. Le laiton doit rester vierge aux deux emplacements."""
+        s = self.peindre(None)
+        for cote_droit in (False, True):
+            self.assertEqual(
+                self.encre_sombre(s, self.zone(cote_droit)), 0,
+                "de l'encre sombre la ou aucune borne n'a ete demandee")
+
+    def test_les_deux_bornes_apparaissent(self):
+        s = self.peindre(10)
+        for cote_droit in (False, True):
+            self.assertGreater(
+                self.encre_sombre(s, self.zone(cote_droit)), 8,
+                f"borne {'haute' if cote_droit else 'basse'} absente")
+
+    def test_le_nombre_grave_suit_le_maximum_reel(self):
+        """Le coeur de l'affaire : au volume, dont le maximum vaut 31, la borne
+        haute ne doit pas etre celle d'une molette d'EQ. Deux maximums differents
+        donnent donc deux gravures differentes -- et un mutant qui ecrirait "10"
+        en dur passerait tous les autres tests de ce fichier."""
+        zone = self.zone(True)
+        self.assertNotEqual(self.octets_de_zone(self.peindre(10), zone),
+                            self.octets_de_zone(self.peindre(31), zone),
+                            'la borne haute est identique a 10 et a 31 : le '
+                            "nombre grave ne suit pas le maximum")
+        # Et un maximum a un seul chiffre pese moins qu'un maximum a deux.
+        un_chiffre = self.encre_sombre(self.peindre(9), zone)
+        deux_chiffres = self.encre_sombre(self.peindre(31), zone)
+        self.assertGreater(deux_chiffres, un_chiffre * 1.3,
+                           f'"31" ne pese pas plus que "9" : {deux_chiffres} '
+                           f"contre {un_chiffre}")
+        # La borne BASSE, elle, est le meme "0" quel que soit le maximum.
+        self.assertEqual(
+            self.octets_de_zone(self.peindre(10), self.zone(False)),
+            self.octets_de_zone(self.peindre(31), self.zone(False)),
+            "la borne basse depend du maximum")
+
+    def test_les_bornes_restent_dans_la_boite_de_la_molette(self):
+        """Contrainte geometrique, comme test_larc_ne_touche_pas_le_dome : la
+        boite de la Knob fait (KNOB_RADIUS + KNOB_MARGIN) de demi-cote, et
+        l'anneau de focus se pose a TICK_EXTENT * R + 2,2. Les bornes doivent
+        tenir DEDANS et ne pas traverser l'anneau."""
+        rayon = ui.KNOB_RADIUS
+        cote = (ui.KNOB_RADIUS + ui.KNOB_MARGIN) * 2
+        s, cr = surface_et_contexte(cote, cote)
+        ui.paint_knob_ticks(cr, cote / 2, cote / 2, rayon, 0.5, maximum=31)
+        s.flush()
+        o, pas = s.get_data(), s.get_stride()
+        limite = rayon * ui.TICK_EXTENT + 2.2
+        dehors = 0
+        for y in range(cote):
+            for x in range(cote):
+                if o[y * pas + x * 4 + 3] <= 40:
+                    continue
+                if math.hypot(x - cote / 2 + 0.5, y - cote / 2 + 0.5) > limite:
+                    dehors += 1
+        self.assertEqual(dehors, 0,
+                         f"{dehors} pixels d'encre au-dela de l'anneau de focus")
+
+
 class TestPeintureDuLevier(unittest.TestCase):
     """Le levier de mise en service. Ce qui se teste ici, c'est qu'il peint et
     que les deux positions ne donnent pas le meme dessin -- un levier dont on ne

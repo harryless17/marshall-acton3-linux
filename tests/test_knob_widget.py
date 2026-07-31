@@ -4,6 +4,7 @@ demande un Gdk.Display.
 L'arithmetique, elle, est testee sans ecran dans test_knob_model.py -- c'est
 tout l'interet de la separation.
 """
+import math
 import os
 import sys
 import unittest
@@ -317,6 +318,163 @@ class TestLevierDansLaFacade(unittest.TestCase):
         facade, recus = self.faire()
         facade.autostart.toggle()
         self.assertEqual(recus, [True])
+
+    def test_le_levier_est_bien_sur_la_plaque(self):
+        """Il a demenage du pied vers la plaque, et l'attribut doit continuer de
+        designer le MEME objet : marshall-applet ne connait que le signal, mais
+        les deux chemins doivent rester le meme levier."""
+        facade, _ = self.faire()
+        self.assertIs(facade.autostart, facade.panel.autostart)
+        parent = facade.autostart.get_parent()
+        while parent is not None and parent is not facade.panel:
+            parent = parent.get_parent()
+        self.assertIs(parent, facade.panel,
+                      "le levier n'est pas un descendant de la plaque")
+
+    def test_le_levier_porte_l_infobulle_entiere(self):
+        """SESSION grave sur le laiton ne dit pas tout : la phrase complete doit
+        rester a un survol."""
+        facade, _ = self.faire()
+        self.assertEqual(facade.autostart.get_tooltip_text(),
+                         "Démarrer avec la session")
+
+
+@unittest.skipUnless(AFFICHEUR, "aucun Gdk.Display : widget GTK inconstructible")
+class TestDispositionDeLaPlaque(unittest.TestCase):
+    """La plaque n'est plus homogene -- la colonne du levier n'a pas la largeur
+    d'une colonne de molette -- et deux proprietes doivent survivre a ce
+    changement : les trois molettes restent EQUIDISTANTES, et le trio reste
+    centre sur la capsule. Les deux se mesurent sur les allocations reelles.
+
+    Hors ecran : Gtk.OffscreenWindow applique bien le theme et alloue vraiment,
+    sans jamais montrer de fenetre.
+    """
+
+    def disposer(self):
+        facade = ui.Facade(["Neutre", "Films", "Musique", "Voix / podcast"],
+                           {"volume": 31, "bass": 10, "treble": 10})
+        fenetre = Gtk.OffscreenWindow()
+        fenetre.add(facade)
+        fenetre.show_all()
+        fenetre.set_size_request(ui.WINDOW_WIDTH, ui.WINDOW_HEIGHT)
+        # Il faut pomper : une allocation n'existe pas avant que GTK ait mesure.
+        for _ in range(60):
+            while Gtk.events_pending():
+                Gtk.main_iteration()
+        return facade, fenetre
+
+    def test_la_taille_par_defaut_couvre_le_minimum(self):
+        """WINDOW_WIDTH et WINDOW_HEIGHT ne sont pas un cadrage : une fenetre non
+        redimensionnable plus petite que son minimum grandit d'elle-meme, sous le
+        nez de l'utilisateur. Ce test attrape le cas ou une piece de la plaque se
+        met a reclamer plus de place -- rendre la boite exterieure homogene, par
+        exemple, ferait reclamer 258 px a la colonne du levier comme aux
+        molettes."""
+        facade, fenetre = self.disposer()
+        try:
+            largeur = facade.get_preferred_width()[1]
+            hauteur = facade.get_preferred_height()[1]
+            self.assertLessEqual(largeur, ui.WINDOW_WIDTH,
+                                 f"minimum {largeur} px de large pour une "
+                                 f"fenetre annoncee a {ui.WINDOW_WIDTH}")
+            self.assertLessEqual(hauteur, ui.WINDOW_HEIGHT,
+                                 f"minimum {hauteur} px de haut pour une "
+                                 f"fenetre annoncee a {ui.WINDOW_HEIGHT}")
+        finally:
+            fenetre.destroy()
+
+    def test_la_toile_reste_la_surface_dominante(self):
+        """Sur une facade d'ampli la toile DOMINE, le panneau de commandes n'est
+        qu'un bandeau. La plaque a grandi deux fois (graduation, puis creux) et
+        chaque fois la toile a du suivre : l'inversion doit rester impossible AU
+        MINIMUM, pas seulement a la taille par defaut."""
+        facade, fenetre = self.disposer()
+        try:
+            bandes = facade.get_children()[0].get_children()
+            plaque = bandes[0].get_preferred_height()[1]
+            toile = bandes[1].get_preferred_height()[1]
+            self.assertGreater(toile, plaque,
+                               f"toile {toile} px contre plaque {plaque} px")
+        finally:
+            fenetre.destroy()
+
+    def test_les_trois_molettes_restent_equidistantes(self):
+        facade, fenetre = self.disposer()
+        try:
+            axes = []
+            for cle, _travel in ui.REGISTERS:
+                a = facade.panel.knobs[cle].get_allocation()
+                axes.append(a.x + a.width / 2.0)
+            ecarts = (axes[1] - axes[0], axes[2] - axes[1])
+            self.assertGreater(min(ecarts), 0, f"molettes desordonnees : {axes}")
+            # 1 px de tolerance : la boite homogene distribue un reste entier.
+            self.assertLessEqual(
+                abs(ecarts[0] - ecarts[1]), 1.0,
+                f"espacement inegal entre les molettes : {ecarts}")
+        finally:
+            fenetre.destroy()
+
+    def test_le_trio_reste_centre_sur_la_capsule(self):
+        """La cale de gauche doit valoir la colonne du levier MARGE COMPRISE.
+        Sans elle le trio se decalait de 8 px, et sur une capsule -- dont les deux
+        bouts demi-circulaires sont le repere de symetrie -- ca se voit."""
+        facade, fenetre = self.disposer()
+        try:
+            bande = facade.panel.get_allocation()
+            centre = bande.x + bande.width / 2.0
+            gauche = facade.panel.knobs["volume"].get_allocation()
+            droite = facade.panel.knobs["treble"].get_allocation()
+            axe = ((gauche.x + gauche.width / 2.0)
+                   + (droite.x + droite.width / 2.0)) / 2.0
+            self.assertLess(abs(axe - centre), 2.0,
+                            f"axe du trio a {axe}, centre de la plaque a "
+                            f"{centre}")
+        finally:
+            fenetre.destroy()
+
+    def test_le_levier_et_son_libelle_tiennent_dans_la_capsule(self):
+        """La contrainte propre a la capsule : plus on descend, plus le bord
+        rentre. C'est le libelle -- la piece la plus large ET la plus basse de la
+        colonne -- qui touche le premier, et SESSION_INSET est calcule pour ca.
+        On verifie les DEUX pieces contre le bord reel de la capsule."""
+        facade, fenetre = self.disposer()
+        try:
+            bande = facade.panel.get_allocation()
+            plaque_x = bande.x + ui.RECESS_SPREAD
+            plaque_w = bande.width - 2 * ui.RECESS_SPREAD
+            plaque_h = bande.height - 2 * ui.RECESS_SPREAD
+            rayon = plaque_h / 2.0
+            cy = bande.y + ui.RECESS_SPREAD + rayon
+            cx_droit = plaque_x + plaque_w - rayon      # centre du bout droit
+
+            libelle = None
+            for enfant in facade.panel.get_children():
+                for petit in getattr(enfant, "get_children", list)():
+                    if isinstance(petit, Gtk.Label) and \
+                            petit.get_text() == "SESSION":
+                        libelle = petit
+            self.assertIsNotNone(libelle, "libelle SESSION introuvable")
+
+            for nom, widget, largeur_encre in (
+                    ("levier", facade.autostart, None),
+                    ("SESSION", libelle, libelle.get_preferred_width()[1])):
+                a = widget.get_allocation()
+                # L'encre d'une etiquette est centree dans son allocation ; celle
+                # du levier occupe toute la sienne.
+                if largeur_encre is None:
+                    x_max = a.x + a.width
+                else:
+                    x_max = a.x + (a.width + largeur_encre) / 2.0
+                for y in (a.y, a.y + a.height):
+                    dy = y - cy
+                    rentre = rayon - math.sqrt(max(0.0, rayon ** 2 - dy ** 2))
+                    bord = plaque_x + plaque_w - rentre
+                    self.assertLess(
+                        x_max, bord,
+                        f"{nom} deborde de la capsule : {x_max} contre un bord "
+                        f"a {bord} (dy={dy})")
+        finally:
+            fenetre.destroy()
 
 
 if __name__ == "__main__":

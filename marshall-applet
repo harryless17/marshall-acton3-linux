@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """marshall-applet -- pilote une enceinte Marshall Acton III depuis la barre GNOME.
 
-Icone permanente + menu (etat, presets) et une fenetre de reglages a sliders.
+Icone permanente, et une fenetre en facade d'amplificateur : trois molettes
+rotatives, les presets, l'etat du lien, l'autostart et l'arret.
+
+Le menu de l'icone existe encore, mais il n'est PLUS le chemin unique vers quoi
+que ce soit : sur GNOME 46 / X11 avec ubuntu-appindicators, un clic droit sur
+l'icone ne sort aucun menu, ce qui rendait "Quitter" et "Reconnecter"
+inatteignables. Toute fonction est desormais dans la fenetre.
+
+Le dessin et les controles vivent dans marshall_ui, qui ne connait ni BlueZ ni
+Speaker. Ce fichier ne fait que l'orchestration : icone, debounce, transport.
 
 REGLE D'ARCHITECTURE : aucun appel BLE depuis un handler GTK.
 Les appels du module sont synchrones. Il n'y a PAS de risque de reentrance
@@ -48,7 +57,7 @@ from marshall_ui import Facade, WINDOW_WIDTH, WINDOW_HEIGHT
 APP_ID = "io.github.harryless17.MarshallApplet"
 ICON_OK = "audio-speakers"
 ICON_OFF = "audio-volume-muted"
-DEBOUNCE_MS = 150       # attente avant d'envoyer un reglage de slider
+DEBOUNCE_MS = 150       # attente avant d'envoyer un reglage de molette
 REFRESH_MS = 120        # regroupement des rafraichissements d'UI
 
 
@@ -520,8 +529,9 @@ class Applet(Gtk.Application):
         self._refresh()
 
     def schedule_write(self, key, value):
-        """Un glissement de slider emet des dizaines d'evenements ; sur un canal
-        a 1-2 s par commande il faut n'en envoyer qu'un, apres l'arret du geste.
+        """Tourner une molette emet des dizaines de valeurs -- mesure : cinq
+        pour cinq pixels de glisse ; sur un canal a 1-2 s par commande il faut
+        n'en envoyer qu'une, apres l'arret du geste.
 
         Chaque mouvement repousse l'echeance : l'envoi part DEBOUNCE_MS apres le
         dernier deplacement.

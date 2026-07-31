@@ -690,3 +690,357 @@ class Knob(Gtk.DrawingArea):
             self._emit_if_changed(self._m.set_value(self._m.maximum))
             return True
         return False
+
+
+# -- assemblage -----------------------------------------------------------
+# Taille par defaut de la fenetre. Ce n'est PAS un cadrage : la facade exige
+# deja 461x393 avec la police du theme de cette machine (mesure), et une fenetre
+# non redimensionnable plus petite que le minimum grandit d'elle-meme. Ces
+# valeurs laissent donc juste un peu de mou, que la Grille absorbe puisqu'elle
+# est le seul enfant extensible. La largeur est dictee par la rangee des presets
+# plus le bouton d'etat ; la hauteur par la somme des quatre bandes.
+WINDOW_WIDTH = 470
+WINDOW_HEIGHT = 400
+MARGIN = 12
+# Laiton visible entre le bord de la plaque et le bloc molette + libelle + valeur.
+PLATE_PADDING = 16
+
+# Les trois registres pilotables, avec leur course de glisse. L'ordre est celui
+# du panneau de commandes de l'enceinte.
+REGISTERS = (("volume", TRAVEL_VOLUME_PX),
+             ("bass", TRAVEL_EQ_PX),
+             ("treble", TRAVEL_EQ_PX))
+
+# Les deux libelles du bouton d'etat. Nommes parce que la largeur du bouton est
+# figee sur le plus long, ce qui les rend solidaires : voir Facade.__init__.
+STATUS_CONNECTED = "● connectée"
+STATUS_DISCONNECTED = "○ déconnectée — reconnecter"
+
+
+# Le pied reste en widgets GTK ordinaires : inutile de peindre des boutons a la
+# main, GTK gere deja le survol, le focus et le clavier.
+CSS = b"""
+.marshall-facade { background-color: transparent; }
+.marshall-cap {
+  font-size: 8pt; font-weight: 600; letter-spacing: 1px;
+  color: #3a2c06;
+}
+.marshall-footer .marshall-cap { color: #8d8d92; }
+.marshall-val { font-size: 10pt; font-weight: 700; color: #2c2105; }
+.marshall-preset, .marshall-quit {
+  font-size: 8pt; font-weight: 600; padding: 4px 9px;
+  color: #c8b47a; background-image: none; background-color: rgba(201,162,39,0.07);
+  border: 1px solid rgba(201,162,39,0.35); border-radius: 3px; text-shadow: none;
+}
+.marshall-preset:hover, .marshall-quit:hover {
+  background-color: rgba(201,162,39,0.18);
+}
+.marshall-preset-actif {
+  color: #241b02;
+  background-image: linear-gradient(to bottom, #e8ca63, #bf9a1f);
+  border-color: #8d6f1b;
+}
+/* Sans cette regle un preset mort est INDISCERNABLE d'un preset vivant : la
+   couleur ci-dessus s'applique aussi a l'etat :disabled, et notre provider
+   passe devant la regle de grisement du theme (mesure : #c8b47a a l'identique,
+   sensible ou non). Hors connexion, un clic ne fait rien -- ca doit se voir. */
+.marshall-preset:disabled {
+  color: rgba(200,180,122,0.32);
+  background-color: transparent;
+  border-color: rgba(201,162,39,0.13);
+}
+.marshall-etat { font-size: 8pt; color: #8d8d92; }
+/* L'interrupteur du theme arrive dans la couleur d'accent de la session -- ici
+   un violet Yaru, qui sur du laiton et du tolex noir est la seule tache de
+   couleur etrangere de la fenetre. On le repeint en laiton. Priorite
+   APPLICATION, donc ces regles passent devant celles du theme. */
+.marshall-footer switch {
+  background-image: none; background-color: rgba(0,0,0,0.55);
+  border: 1px solid rgba(201,162,39,0.30);
+}
+.marshall-footer switch:checked {
+  background-image: none; background-color: #bf9a1f; border-color: #8d6f1b;
+}
+.marshall-footer switch slider {
+  background-image: none; background-color: #ded0aa;
+  border: 1px solid rgba(0,0,0,0.45);
+}
+"""
+
+_css_installed = False
+
+
+def _cached_background(widget, painter):
+    """Rend la surface de fond de `widget`, construite au besoin puis gardee.
+
+    POURQUOI UN CACHE : ces conteneurs sont les PARENTS des molettes, donc un
+    glisse les fait redessiner a chaque trame -- mesure a la souris reelle,
+    31 dessins de la facade pour un glisse de 200 px en 954 ms, GTK ne saute
+    PAS les ancetres. Cairo decoupe le RENDU, pas la construction des chemins,
+    donc sans cache paint_tolex se rejouerait en entier a chaque trame : 4,7 ms
+    mesurees en 470x400, sur les 16,7 ms d'une trame a 60 Hz. La Grille, elle,
+    n'a pas de cache et n'en a pas besoin : elle ne se redessine PAS pendant un
+    glisse (0 fois sur ces 31 trames), ses 4,0 ms ne sont donc jamais payees.
+
+    A NE JAMAIS FAIRE, et c'est le piege qui a coute cette fonction : poser un
+    border_width sur un conteneur qui peint son fond. GtkContainer retire le
+    border_width de l'allocation dans son adjust_size_allocation, et l'ecretage
+    du draw suit cette allocation reduite. Le vide se retrouve donc DEHORS :
+    plaque annoncee 125 px de haut et peinte 97, molettes mordant sur ses deux
+    bords, et un lisere trace a 1,5 px du bord du caisson tout simplement
+    ecrete, donc invisible. Le vide interne doit venir des marges des enfants
+    (BrassPanel) ou d'une boite interne (Facade).
+    """
+    alloc = widget.get_allocation()
+    taille = (alloc.width, alloc.height)
+    if widget._background_size != taille:
+        widget._background = cairo.ImageSurface(cairo.FORMAT_ARGB32, *taille)
+        painter(cairo.Context(widget._background), *taille)
+        widget._background_size = taille
+    return widget._background
+
+
+def install_css():
+    """Idempotent : deux appels ne doivent pas empiler deux providers, sinon
+    les regles seraient evaluees deux fois."""
+    global _css_installed
+    if _css_installed:
+        return
+    screen = Gdk.Screen.get_default()
+    if screen is None:
+        # Sans afficheur il n'y a rien a styler, et surtout
+        # add_provider_for_screen(None, ...) ne leve pas : il declenche un
+        # Gtk-ERROR, qui AVORTE le processus (verifie -- SIGTRAP). Rendre la
+        # main garde ce module importable et appelable sans ecran, ce qui est
+        # exactement la promesse de son en-tete. Le drapeau reste a False, donc
+        # un appel ulterieur avec un ecran installe bien la feuille.
+        return
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(
+        screen, provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    _css_installed = True
+
+
+class BrassPanel(Gtk.Box):
+    """La plaque de laiton : peint son fond, et porte les trois molettes."""
+
+    def __init__(self, maximums):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL,
+                         homogeneous=True)
+        # AUCUN border_width ici : il rognerait la plaque peinte au lieu de
+        # l'encadrer, cf. _cached_background. Le laiton autour du bloc de
+        # commandes vient des marges des colonnes.
+        self._background = None          # cf. _on_draw
+        self._background_size = None
+        self.knobs = {}
+        for key, travel in REGISTERS:
+            column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            # Haut et bas dissymetriques a dessein : la colonne commence par une
+            # Knob, qui porte deja ses KNOB_MARGIN px de vide interne, et finit
+            # par une etiquette qui s'arrete pile a son texte. A marge egale la
+            # plaque montrerait donc KNOB_MARGIN px de laiton de moins sous la
+            # valeur qu'au-dessus de la molette, et la valeur aurait l'air de
+            # tomber du bord. On vise du laiton VISIBLE egal des deux cotes.
+            column.set_margin_top(PLATE_PADDING - KNOB_MARGIN)
+            column.set_margin_bottom(PLATE_PADDING)
+            knob = Knob(key, maximum=maximums[key], travel_px=travel)
+            caption = Gtk.Label(label=key.upper())
+            caption.get_style_context().add_class("marshall-cap")
+            value = Gtk.Label(label="0")
+            value.get_style_context().add_class("marshall-val")
+            column.pack_start(knob, False, False, 0)
+            column.pack_start(caption, False, False, 0)
+            column.pack_start(value, False, False, 0)
+            self.add(column)
+            self.knobs[key] = knob
+            knob._value_label = value
+        self.connect("draw", self._on_draw)
+
+    def _paint_background(self, cr, w, h):
+        paint_brass(cr, 0, 0, w, h)
+
+    def _on_draw(self, _w, cr):
+        cr.set_source_surface(
+            _cached_background(self, self._paint_background), 0, 0)
+        cr.paint()
+        return False        # les enfants se dessinent par-dessus
+
+    def set_display(self, key, value):
+        self.knobs[key]._value_label.set_text(str(value))
+
+
+class Grille(Gtk.DrawingArea):
+    """La toile tissee et le logo. Prend la place restante."""
+
+    def __init__(self):
+        super().__init__()
+        # 140 et non 96 : sur une facade d'ampli la toile DOMINE, le panneau de
+        # commandes n'est qu'un bandeau. A 96 la plaque (123 px) etait plus haute
+        # que la toile et l'ensemble se lisait comme une barre d'outils posee sur
+        # une bande decorative. A 140 le rapport s'inverse enfin.
+        self.set_size_request(-1, 140)
+        self.connect("draw", self._on_draw)
+
+    def _on_draw(self, _w, cr):
+        alloc = self.get_allocation()
+        paint_grille(cr, 0, 0, alloc.width, alloc.height)
+        paint_logo(cr, alloc.width / 2, alloc.height / 2,
+                   max(20, min(54, alloc.height * 0.50)))
+        return False
+
+
+class Facade(Gtk.Box):
+    """L'assemblage complet, sur un fond de tolex.
+
+    Ne connait ni BlueZ, ni Speaker : elle ne sait meme pas qu'une enceinte
+    existe. Elle expose des signaux, et marshall-applet les relie.
+    """
+
+    __gsignals__ = {
+        "knob-changed": (GObject.SignalFlags.RUN_FIRST, None, (str, int)),
+        "preset-chosen": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "reconnect-requested": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "autostart-toggled": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
+        "quit-requested": (GObject.SignalFlags.RUN_FIRST, None, ()),
+    }
+
+    def __init__(self, presets, maximums):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        install_css()
+        self.get_style_context().add_class("marshall-facade")
+        self._background = None
+        self._background_size = None
+        # True pendant les mises a jour programmees : sans ca, refleter l'etat
+        # de l'enceinte declencherait des ecritures vers l'enceinte.
+        self._loading = True
+
+        # Une boite interne porte la marge, et NON un border_width sur la facade
+        # elle-meme : cf. _cached_background, le border_width ecrete le fond et
+        # le lisere dore, trace a 1,5 px du bord, disparaissait completement. Le
+        # tolex doit aller jusqu'au bord du caisson comme sur un vrai ampli.
+        bands = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=MARGIN)
+        bands.set_border_width(MARGIN)
+        self.pack_start(bands, True, True, 0)
+
+        self.panel = BrassPanel(maximums)
+        bands.pack_start(self.panel, False, False, 0)
+        for key, _travel in REGISTERS:
+            self.panel.knobs[key].connect("value-changed", self._on_knob, key)
+
+        bands.pack_start(Grille(), True, True, 0)
+
+        row = Gtk.Box(spacing=5)
+        self.presets = {}
+        for name in presets:
+            b = Gtk.Button(label=name)
+            b.get_style_context().add_class("marshall-preset")
+            b.connect("clicked", lambda _w, n=name: self.emit("preset-chosen", n))
+            row.pack_start(b, False, False, 0)
+            self.presets[name] = b
+        # Bouton et non etiquette : sur GNOME 46 le clic droit sur l'icone ne
+        # sort aucun menu, donc "Reconnecter" doit vivre ici ou nulle part.
+        self.etat = Gtk.Button()
+        self.etat.set_relief(Gtk.ReliefStyle.NONE)
+        self.etat.get_style_context().add_class("marshall-etat")
+        self.etat.connect("clicked", lambda _w: self.emit("reconnect-requested"))
+        # Etiquette explicite, et non Gtk.Button(label=...) : set_label() DETRUIT
+        # l'etiquette implicite et en recree une (verifie -- l'objet change et
+        # xalign repart a 0.5), donc l'alignement a droite ne survivrait pas a la
+        # premiere mise a jour. Or il faut aligner a droite : le bouton a une
+        # largeur figee ci-dessous, et un texte centre dedans laisse un trou
+        # visible entre le dernier preset et l'etat.
+        self._etat_label = Gtk.Label(label=STATUS_DISCONNECTED, xalign=1.0)
+        self.etat.add(self._etat_label)
+        # Largeur figee sur le libelle le plus long, MESUREE et non ecrite en
+        # dur : elle depend de la police du theme. Sans ca, tomber en panne
+        # faisait grandir la rangee de 85 px (81 -> 166 mesures ici), et une
+        # fenetre non redimensionnable en saute de largeur -- observe, elle
+        # passait de 420 a 475 px sous le nez de l'utilisateur a chaque perte de
+        # lien.
+        #
+        # show_all() AVANT de mesurer, et ce n'est pas cosmetique : GTK 3
+        # court-circuite le calcul de taille d'un widget non visible et rend 0
+        # (verifie : 0 avant, 166 apres). Un set_size_request a 0 ne se verrait
+        # pas, et la fenetre sauterait quand meme.
+        self.etat.show_all()
+        self.etat.set_size_request(self.etat.get_preferred_width()[1], -1)
+        self._etat_label.set_text(STATUS_CONNECTED)
+        row.pack_end(self.etat, False, False, 0)
+        bands.pack_start(row, False, False, 0)
+
+        footer = Gtk.Box(spacing=8)
+        footer.get_style_context().add_class("marshall-footer")
+        self.autostart = Gtk.Switch()
+        self.autostart.connect("notify::active", self._on_autostart)
+        footer.pack_start(self.autostart, False, False, 0)
+        caption = Gtk.Label(label="Démarrer avec la session", xalign=0)
+        caption.get_style_context().add_class("marshall-cap")
+        footer.pack_start(caption, False, False, 0)
+        quit_button = Gtk.Button(label="Quitter")
+        quit_button.get_style_context().add_class("marshall-quit")
+        quit_button.connect("clicked", lambda _w: self.emit("quit-requested"))
+        footer.pack_end(quit_button, False, False, 0)
+        bands.pack_start(footer, False, False, 0)
+
+        self.connect("draw", self._on_draw)
+        self._loading = False
+
+    def _paint_background(self, cr, w, h):
+        paint_tolex(cr, w, h)
+        paint_piping(cr, w, h)
+
+    def _on_draw(self, _w, cr):
+        cr.set_source_surface(
+            _cached_background(self, self._paint_background), 0, 0)
+        cr.paint()
+        return False
+
+    def _on_knob(self, _widget, value, key):
+        self.panel.set_display(key, value)
+        if self._loading:
+            return
+        self.emit("knob-changed", key, value)
+
+    def _on_autostart(self, switch, _param):
+        if self._loading:
+            return
+        self.emit("autostart-toggled", switch.get_active())
+
+    def update(self, state, connected, pending, active_preset, autostart):
+        """Mise a jour programmee : ne doit declencher AUCUNE ecriture.
+
+        `pending` est passe explicitement, et non lu dans l'applet : c'est ce
+        qui garde ce module ignorant de l'applet. Une valeur encore en vol ne
+        doit pas etre ecrasee, sinon la molette sauterait en arriere sous le
+        doigt.
+        """
+        previous = self._loading          # restaurer, pas forcer a False
+        self._loading = True
+        try:
+            if state:
+                top = state.get("max_volume")
+                if top:
+                    self.panel.knobs["volume"].set_maximum_silently(top)
+                for key, knob in self.panel.knobs.items():
+                    if key in pending or key not in state:
+                        continue
+                    knob.set_value_silently(state[key])
+                    self.panel.set_display(key, state[key])
+            for knob in self.panel.knobs.values():
+                knob.set_sensitive(bool(connected))
+            for name, button in self.presets.items():
+                button.set_sensitive(bool(connected))
+                context = button.get_style_context()
+                if name == active_preset:
+                    context.add_class("marshall-preset-actif")
+                else:
+                    context.remove_class("marshall-preset-actif")
+            self._etat_label.set_text(STATUS_CONNECTED if connected
+                                      else STATUS_DISCONNECTED)
+            # Toujours sensible : griser l'etat normal le fait lire comme une
+            # panne. Le libelle porte l'etat, le clic est sans effet connecte.
+            self.autostart.set_active(bool(autostart))
+        finally:
+            self._loading = previous

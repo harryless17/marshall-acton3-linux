@@ -121,6 +121,11 @@ TOLEX = (0.063, 0.063, 0.067)
 # que la passe claire montait de 0.16, donc un seul des deux sens ressortait et
 # la toile prenait l'air d'un cotele diagonal. A 0.14 les deux ont de la place.
 CLOTH = (0.140, 0.140, 0.157)
+# Le fil clair de la toile, NEUTRE et non creme. Une teinte chaude faisait virer
+# beige tout le champ -- mesure de l'ecart R-B sur le bandeau : +2,1 avec un fil
+# creme, contre -2,8 ici, quand le fond CLOTH lui-meme est a -2,7. Le "salt" du
+# salt and pepper est du fil blanc, pas du lin.
+CLOTH_THREAD = (0.82, 0.82, 0.80)
 GOLD_PIPING = (0.808, 0.659, 0.235)
 
 # La molette parcourt 280 degres, comme un potentiometre reel : les butees
@@ -141,23 +146,66 @@ def _rounded_path(cr, x, y, w, h, radius):
     cr.close_path()
 
 
-def _hatch(cr, x, y, w, h, step, rgba, rising):
-    """Trame diagonale, utilisee pour le tissage de la toile.
+def _weave(cr, x, y, w, h, step, light, dark):
+    """Chaine et trame ORTHOGONALES, en tirets alternes.
 
-    Chaque segment est decale de h en x entre son depart et son arrivee, donc
-    il faut balayer d de -h a w dans LES DEUX sens : partir de 0 laisserait un
-    triangle de h pixels de cote sans trame, et la couture diagonale entre les
-    deux zones se voit immediatement sur la toile.
+    Tout tient dans l'entrelacement : chaque fil passe DESSUS sur une maille et
+    DESSOUS sur la suivante, ce qu'on obtient en dephasant les tirets d'un pas
+    entre les horizontaux et les verticaux. Deux series de traits pleins ne
+    donnent qu'un grillage ; ce sont les passages alternes qui font lire du
+    tissu.
+
+    La trame etait diagonale, et c'est precisement ce qui ratait dans un champ
+    large et court. Mesure sur le champ REEL de 446x149 : l'ecart-type de
+    luminance du grain passe de 9,7 en diagonal a 26,5 en orthogonal. A 9,7 le
+    motif se moyenne a l'oeil des 1:1 et la toile prend l'air d'un carbone tisse
+    ou d'une tole perforee -- pas d'un textile.
+    """
+    cr.save()
+    cr.set_line_width(1)
+    # L'ordre compte : les fils clairs d'abord, les sombres par-dessus, sinon
+    # les creux du tissage ne se referment pas sur les bosses.
+    for phase, rgba, vertical in ((0, light, False), (step, light, True),
+                                  (step, dark, False), (0, dark, True)):
+        cr.set_source_rgba(*rgba)
+        cr.set_dash([step, step], phase)
+        limite = w if vertical else h
+        p = 0.5
+        while p < limite:
+            if vertical:
+                cr.move_to(x + p, y)
+                cr.line_to(x + p, y + h)
+            else:
+                cr.move_to(x, y + p)
+                cr.line_to(x + w, y + p)
+            p += step
+        cr.stroke()
+    cr.restore()
+
+
+def _flecks(cr, x, y, w, h, step, rgba, one_in):
+    """Le "salt" du salt and pepper : des fils clairs semes irregulierement.
+
+    Tirage pseudo-aleatoire fait a la main, et deterministe a dessein -- la
+    toile ne doit pas scintiller d'un redessin a l'autre. C'est cette
+    irregularite qui separe un textile d'une grille : l'entrelacement seul,
+    parfaitement periodique, se lit encore comme une moustiquaire.
     """
     cr.save()
     cr.set_source_rgba(*rgba)
-    cr.set_line_width(1)
-    d = -h
-    while d < w:
-        cr.move_to(x + d, y + h if rising else y)
-        cr.line_to(x + d + h, y if rising else y + h)
-        d += step
-    cr.stroke()
+    graine = 1
+    yy = y
+    while yy < y + h:
+        xx = x
+        while xx < x + w:
+            # congruence lineaire minuscule ; les bits de poids faible d'un LCG
+            # sont notoirement mauvais, d'ou le decalage de 16 avant le modulo
+            graine = (graine * 1103515245 + 12345) & 0x7FFFFFFF
+            if (graine >> 16) % one_in == 0:
+                cr.rectangle(xx, yy, 1, 1)
+            xx += step
+        yy += step
+    cr.fill()
     cr.restore()
 
 
@@ -294,35 +342,37 @@ def paint_grille(cr, x, y, w, h, radius=3):
     cr.set_source_rgb(*CLOTH)
     cr.paint()
 
-    # Le tissage doit se voir a 1:1, sans loupe : c'est une bonne part de ce
-    # qui rend une facade Marshall reconnaissable. Deux corrections pour ca.
+    # Le tissage doit se voir A 1:1, sans loupe, DANS LE CHAMP REEL : c'est une
+    # bonne part de ce qui rend une facade Marshall reconnaissable. Le maillon
+    # faible etait la : cale sur une planche d'essai a peu pres carree, la trame
+    # diagonale disparaissait dans les 446x149 du vrai bandeau.
     #
-    # Le pas passe de 3 a 4 px. A 3 px, un fil clair et un fil sombre pour
-    # deux pixels de fond : les trois se moyennent a l'oeil et il ne reste
-    # qu'un aplati. A 4 px chaque maille garde du fond entre ses fils, donc
-    # la maille elle-meme devient l'unite visible.
-    #
-    # Les deux opacites sont appariees a l'oeil, sur une planche d'essai, et pas
-    # calculees : ce qui compte est que les deux sens pesent PAREIL, sinon le
-    # sens dominant se lit comme une rayure diagonale au lieu d'un tissu. Le
-    # noir part avec un handicap -- sur un fond deja sombre il a moins de marge
-    # que le clair -- d'ou 0.45 contre 0.16 et non deux valeurs voisines.
-    _hatch(cr, x, y, w, h, 4, (0.886, 0.839, 0.698, 0.16), True)
-    _hatch(cr, x, y, w, h, 4, (0, 0, 0, 0.45), False)
+    # Maille de 2 px, entrelacee. Le sombre porte 0.55 contre 0.22 au clair, et
+    # ce n'est pas une symetrie ratee : un fil clair a du champ libre sur un fond
+    # a 0.14, un fil sombre n'en a presque pas. Le sombre sert aussi a retenir la
+    # luminance, que les fils clairs font monter -- mesure sur le champ reel,
+    # moyenne 40,6 contre 33,6 avant, pour un grain qui passe de 9,7 a 26,5. Une
+    # toile noire qui s'eclaircit de sept niveaux reste une toile noire ; une
+    # toile sans grain n'est pas une toile.
+    _weave(cr, x, y, w, h, 2, CLOTH_THREAD + (0.22,), (0, 0, 0, 0.55))
+    _flecks(cr, x, y, w, h, 2, CLOTH_THREAD + (0.30,), 5)
 
     # Ombre interne, en deux temps. Le voile radial seul devait monter tres haut
     # en opacite pour creuser les bords, et il noircissait alors le centre au
     # point d'y noyer le logo. On separe donc les deux roles : voile radial
     # doux pour la mise en volume, liseres sombres colles au bord pour le creux.
     #
-    # 0.45 et non 0.55 : le voile est justement ce qui efface le tissage, il
-    # tire tout vers le noir, fils clairs compris. Le creux perdu au bord est
-    # rendu par les liseres juste en dessous, qui eux n'ecrasent que 5 px.
+    # Rayon pilote sur la DEMI-DIAGONALE, et non sur max(w, h) : dans un champ
+    # large et court, max(w, h) * 0.72 posait la butee sombre tres au-dehors --
+    # 321 px pour un coin situe a 235 -- donc toute la surface baignait dans la
+    # rampe au lieu de ses seuls coins, et le voile rongeait les fils clairs sur
+    # les deux tiers de la largeur. Sur la demi-diagonale la rampe epouse le
+    # champ quelle que soit sa forme, et 0.30 suffit alors la ou il fallait 0.45.
     cx, cy = x + w / 2, y + h / 2
-    shade = cairo.RadialGradient(cx, cy, min(w, h) * 0.20,
-                                 cx, cy, max(w, h) * 0.72)
+    demi = math.hypot(w, h) / 2
+    shade = cairo.RadialGradient(cx, cy, demi * 0.25, cx, cy, demi)
     shade.add_color_stop_rgba(0, 0, 0, 0, 0.0)
-    shade.add_color_stop_rgba(1, 0, 0, 0, 0.45)
+    shade.add_color_stop_rgba(1, 0, 0, 0, 0.30)
     cr.set_source(shade)
     cr.paint()
 
@@ -467,7 +517,15 @@ def paint_knob(cr, cx, cy, radius, fraction, actif=True):
     cr.restore()
 
 
-KNOB_RADIUS = 24        # r30 laissait trop peu de place au libelle et a la valeur
+# r28, remonte de 24. Le 24 datait du temps ou le border_width de la plaque lui
+# mangeait 20 px de hauteur : la place manquait alors pour le libelle et la
+# valeur. Depuis que le vide vient des marges des colonnes, elle est la, et un
+# disque de 48 px n'occupait que 32 % d'une cellule de 148 -- trois petits plots
+# sur une large plaque. A 56 px il en occupe 38 % et se lit comme une commande
+# qu'on attrape. C'est aussi le maximum tenable : la plaque grandit de 2 px par
+# pixel de rayon, donc r29 porterait le minimum de la facade a 401 px et ferait
+# grandir une fenetre dont la taille est arretee a 470x400.
+KNOB_RADIUS = 28
 KNOB_MARGIN = 6
 
 # Un cran de roulette physique vaut 1.0 sur l'axe de defilement lisse. On
@@ -713,7 +771,13 @@ REGISTERS = (("volume", TRAVEL_VOLUME_PX),
 
 # Les deux libelles du bouton d'etat. Nommes parce que la largeur du bouton est
 # figee sur le plus long, ce qui les rend solidaires : voir Facade.__init__.
-STATUS_CONNECTED = "● connectée"
+#
+# Poses en balisage Pango, et pas en texte simple, pour une seule raison : le
+# point du voyant connecte doit etre vert quand le mot reste chaud et sourd, et
+# GTK ne sait pas colorer un caractere isole en CSS. Le span ne porte donc QUE le
+# point ; le texte n'en a pas et herite de la couleur de la feuille de style, qui
+# reste ainsi le seul endroit ou vivent les teintes des deux etats.
+STATUS_CONNECTED = '<span foreground="#6dc46a">●</span> connectée'
 STATUS_DISCONNECTED = "○ déconnectée — reconnecter"
 
 
@@ -749,7 +813,24 @@ CSS = b"""
   background-color: transparent;
   border-color: rgba(201,162,39,0.13);
 }
-.marshall-etat { font-size: 8pt; color: #8d8d92; }
+/* Le voyant etait la seule note froide de la fenetre : #8d8d92 est un gris a
+   R-B = -5, et au milieu d'un decor entierement chaud un gris froid se lit comme
+   du bleu (mesure sur les pixels du libelle : 141,141,146). Deux etats separes,
+   parce que l'un informe et l'autre propose d'agir -- d'ou l'or pale hors
+   connexion, la meme famille que le contour des presets, et un survol dans les
+   deux etats pour que le bouton se donne comme cliquable. L'ordre des regles
+   fait la cascade : .marshall-etat-off passe apres .marshall-etat:hover, a
+   specificite egale. */
+.marshall-etat { font-size: 8pt; color: #9a9384; }
+.marshall-etat:hover {
+  color: #c6bda7; background-image: none;
+  background-color: rgba(201,162,39,0.10);
+}
+.marshall-etat.marshall-etat-off { color: #c9b47c; }
+.marshall-etat.marshall-etat-off:hover {
+  color: #ecd79c; background-image: none;
+  background-color: rgba(201,162,39,0.20);
+}
 /* L'interrupteur du theme arrive dans la couleur d'accent de la session -- ici
    un violet Yaru, qui sur du laiton et du tolex noir est la seule tache de
    couleur etrangere de la fenetre. On le repeint en laiton. Priorite
@@ -773,14 +854,17 @@ _css_installed = False
 def _cached_background(widget, painter):
     """Rend la surface de fond de `widget`, construite au besoin puis gardee.
 
-    POURQUOI UN CACHE : ces conteneurs sont les PARENTS des molettes, donc un
-    glisse les fait redessiner a chaque trame -- mesure a la souris reelle,
-    31 dessins de la facade pour un glisse de 200 px en 954 ms, GTK ne saute
-    PAS les ancetres. Cairo decoupe le RENDU, pas la construction des chemins,
-    donc sans cache paint_tolex se rejouerait en entier a chaque trame : 4,7 ms
-    mesurees en 470x400, sur les 16,7 ms d'une trame a 60 Hz. La Grille, elle,
-    n'a pas de cache et n'en a pas besoin : elle ne se redessine PAS pendant un
-    glisse (0 fois sur ces 31 trames), ses 4,0 ms ne sont donc jamais payees.
+    POURQUOI UN CACHE : la facade et la plaque sont les PARENTS des molettes,
+    donc un glisse les fait redessiner a chaque trame -- mesure a la souris
+    reelle, 31 dessins de la facade pour un glisse de 200 px en 954 ms, GTK ne
+    saute PAS les ancetres. Cairo decoupe le RENDU, pas la construction des
+    chemins, donc sans cache paint_tolex se rejouerait en entier a chaque
+    trame : 4,7 ms mesurees en 470x400, sur les 16,7 ms d'une trame a 60 Hz.
+
+    La Grille ne se redessine PAS pendant un glisse (0 fois sur ces 31 trames)
+    mais passe par ici quand meme : depuis que sa toile est reellement tissee
+    elle coute 16,9 ms dans le champ reel, soit une trame pleine a chaque simple
+    reaffichage de la fenetre.
 
     A NE JAMAIS FAIRE, et c'est le piege qui a coute cette fonction : poser un
     border_width sur un conteneur qui peint son fond. GtkContainer retire le
@@ -876,6 +960,8 @@ class Grille(Gtk.DrawingArea):
 
     def __init__(self):
         super().__init__()
+        self._background = None
+        self._background_size = None
         # 140 et non 96 : sur une facade d'ampli la toile DOMINE, le panneau de
         # commandes n'est qu'un bandeau. A 96 la plaque (123 px) etait plus haute
         # que la toile et l'ensemble se lisait comme une barre d'outils posee sur
@@ -883,11 +969,21 @@ class Grille(Gtk.DrawingArea):
         self.set_size_request(-1, 140)
         self.connect("draw", self._on_draw)
 
+    def _paint_background(self, cr, w, h):
+        paint_grille(cr, 0, 0, w, h)
+        # Plafond a 72 et non 54 : a 54 dans un champ de 149 px le lettrage
+        # tenait sur un tiers de la hauteur et flottait au milieu du vide, comme
+        # une legende posee sur la toile. A 72 il en occupe la moitie et 53 % de
+        # la largeur, et il appartient enfin au caisson. Le plafond ne mord qu'au
+        # dela de 144 px de champ ; en dessous c'est la fraction qui commande.
+        paint_logo(cr, w / 2, h / 2, max(20, min(72, h * 0.50)))
+
     def _on_draw(self, _w, cr):
-        alloc = self.get_allocation()
-        paint_grille(cr, 0, 0, alloc.width, alloc.height)
-        paint_logo(cr, alloc.width / 2, alloc.height / 2,
-                   max(20, min(54, alloc.height * 0.50)))
+        # Mise en cache comme les deux conteneurs, cf. _cached_background : la
+        # toile tissee coute 16,9 ms dans le champ reel, soit une trame entiere.
+        cr.set_source_surface(
+            _cached_background(self, self._paint_background), 0, 0)
+        cr.paint()
         return False
 
 
@@ -951,8 +1047,13 @@ class Facade(Gtk.Box):
         # premiere mise a jour. Or il faut aligner a droite : le bouton a une
         # largeur figee ci-dessous, et un texte centre dedans laisse un trou
         # visible entre le dernier preset et l'etat.
-        self._etat_label = Gtk.Label(label=STATUS_DISCONNECTED, xalign=1.0)
+        # Etat initial DECONNECTE, et ce n'est pas arbitraire : rien n'est
+        # connecte avant la premiere update(), et c'est aussi le libelle le plus
+        # long -- la mesure de largeur ci-dessous n'a donc rien a defaire.
+        self._etat_label = Gtk.Label(xalign=1.0)
+        self._etat_label.set_markup(STATUS_DISCONNECTED)
         self.etat.add(self._etat_label)
+        self.etat.get_style_context().add_class("marshall-etat-off")
         # Largeur figee sur le libelle le plus long, MESUREE et non ecrite en
         # dur : elle depend de la police du theme. Sans ca, tomber en panne
         # faisait grandir la rangee de 85 px (81 -> 166 mesures ici), et une
@@ -966,7 +1067,6 @@ class Facade(Gtk.Box):
         # pas, et la fenetre sauterait quand meme.
         self.etat.show_all()
         self.etat.set_size_request(self.etat.get_preferred_width()[1], -1)
-        self._etat_label.set_text(STATUS_CONNECTED)
         row.pack_end(self.etat, False, False, 0)
         bands.pack_start(row, False, False, 0)
 
@@ -1037,8 +1137,15 @@ class Facade(Gtk.Box):
                     context.add_class("marshall-preset-actif")
                 else:
                     context.remove_class("marshall-preset-actif")
-            self._etat_label.set_text(STATUS_CONNECTED if connected
-                                      else STATUS_DISCONNECTED)
+            self._etat_label.set_markup(STATUS_CONNECTED if connected
+                                        else STATUS_DISCONNECTED)
+            # Une seule classe, portee ou retiree : l'etat connecte est celui de
+            # .marshall-etat tout court, inutile de lui en inventer une.
+            etat_context = self.etat.get_style_context()
+            if connected:
+                etat_context.remove_class("marshall-etat-off")
+            else:
+                etat_context.add_class("marshall-etat-off")
             # Toujours sensible : griser l'etat normal le fait lire comme une
             # panne. Le libelle porte l'etat, le clic est sans effet connecte.
             self.autostart.set_active(bool(autostart))

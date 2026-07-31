@@ -10,10 +10,10 @@ Control your **Marshall Acton III** speaker from Linux — volume, bass and treb
 (which has no Linux version).
 
 <p align="center">
-  <img src="docs/images/settings.png" alt="Fenêtre de réglages : sliders volume, bass, treble et les quatre presets" width="600">
+  <img src="docs/images/settings.png" alt="La fenêtre en façade d'amplificateur : plaque de laiton avec les trois molettes volume, bass et treble, toile tissée et logo doré, les quatre presets, l'état du lien, l'interrupteur de démarrage et le bouton Quitter" width="470">
 </p>
 <p align="center">
-  <img src="docs/images/tray.png" alt="L'icône dans la barre système GNOME" width="600">
+  <img src="docs/images/tray.png" alt="L'icône M dorée dans la barre système GNOME, à côté des autres indicateurs" width="320">
 </p>
 
 <details>

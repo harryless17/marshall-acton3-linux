@@ -52,11 +52,15 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from marshall_ble import (
     PRESETS, Speaker, match_preset, BASS_MAX, TREBLE_MAX, VOLUME_MAX_FALLBACK,
 )
-from marshall_ui import Facade, WINDOW_WIDTH, WINDOW_HEIGHT
+from marshall_ui import Facade, WINDOW_WIDTH, WINDOW_HEIGHT, icon_pixbuf
 
 APP_ID = "io.github.harryless17.MarshallApplet"
-ICON_OK = "audio-speakers"
-ICON_OFF = "audio-volume-muted"
+# Cote du pixbuf de l'icone de barre. 22 est la taille traditionnelle d'un
+# panneau GNOME ; l'hote d'icones remet de toute facon l'image a l'echelle de sa
+# barre, donc ce chiffre ne fait que fixer la finesse du rendu -- pas la taille
+# affichee. Le M est dessine pour tenir des 16 px, donc une reduction ne le casse
+# pas. Plus de nom de theme ici : l'icone est notre propre glyphe, cf. paint_m.
+ICON_SIZE = 22
 DEBOUNCE_MS = 150       # attente avant d'envoyer un reglage de molette
 REFRESH_MS = 120        # regroupement des rafraichissements d'UI
 
@@ -107,7 +111,7 @@ Name=Marshall Acton III
 GenericName=Egaliseur d'enceinte
 Comment=Reglage du volume, du bass et du treble de l'enceinte Marshall
 Exec={exec}
-Icon=audio-speakers
+Icon=marshall-applet
 Terminal=false
 Categories=AudioVideo;Audio;Mixer;
 Keywords=marshall;acton;enceinte;speaker;bass;basses;treble;aigus;egaliseur;equalizer;volume;son;audio;bluetooth;
@@ -248,7 +252,10 @@ class Applet(Gtk.Application):
             self.on_settings(None)           # 2e lancement : montrer la fenetre
 
     def _build_icon(self):
-        self.icon = Gtk.StatusIcon.new_from_icon_name(ICON_OFF)
+        # Etat DECONNECTE au depart : rien n'est connecte avant la premiere
+        # _do_refresh, et la connexion initiale est deferree de 2 s.
+        self.icon = Gtk.StatusIcon.new_from_pixbuf(
+            icon_pixbuf(ICON_SIZE, False))
         self.icon.set_title("Marshall Acton III")
         self.icon.set_tooltip_text("Marshall Acton III — connexion…")
         self.icon.set_visible(True)
@@ -365,7 +372,10 @@ class Applet(Gtk.Application):
     def _do_refresh(self):
         self._refresh_timer = None
         connected = self._connected()
-        self.icon.set_from_icon_name(ICON_OK if connected else ICON_OFF)
+        # icon_pixbuf garde ses deux images : on passe ici jusqu'a huit fois par
+        # seconde tant qu'une molette physique tourne, et redessiner le glyphe a
+        # chaque fois serait du travail jete.
+        self.icon.set_from_pixbuf(icon_pixbuf(ICON_SIZE, connected))
         if connected:
             s = self.state
             self.icon.set_tooltip_text(

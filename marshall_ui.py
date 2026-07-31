@@ -8,6 +8,7 @@ La regle d'architecture du projet s'applique ici : aucun widget n'appelle le
 transport. Une Knob emet value-changed, et le debounce de l'applet ecrit.
 """
 import math
+import os
 
 import cairo
 import gi
@@ -427,6 +428,237 @@ def paint_logo(cr, cx, cy, size, text="Marshall"):
     cr.move_to(x, y)
     PangoCairo.show_layout(cr, layout)
     cr.restore()
+
+
+# -- l'icone de la barre systeme ------------------------------------------
+# Un M dore, TRACE ICI et non repris du fabricant : meme arbitrage que
+# paint_logo, une approximation typographique dans l'esprit du badge d'ampli
+# pour un outil personnel non affilie. Aucun visuel Marshall n'est embarque.
+#
+# La contrainte qui a decide de toutes les proportions ci-dessous est 16 px :
+# GNOME rend les icones de barre petites, et a 16 px il ne reste que 2 px de
+# fut. Un serif filiforme ou une contre-forme etroite y disparaissent purement
+# et simplement, donc le glyphe est LARGE, GRAS, et ses aretes verticales sont
+# recalees sur la grille de pixels (cf. _m_path). Toutes ces valeurs ont ete
+# reglees en regardant le rendu a 16 px d'abord, puis verifiees au-dessus.
+M_WIDTH = 0.90          # largeur d'encre, en fraction du cote de la boite
+M_HEIGHT = 0.76
+M_STEM = 0.175          # futs verticaux : 3 px a 16, 2 px se lisait maigre
+M_FLARE = 0.095         # debord du serif de pied, de chaque cote du fut
+M_FLARE_H = 0.40        # part de la hauteur sur laquelle le pied s'evase
+# Obliques plus MINCES que les futs, et c'est le contraste de trace d'une
+# lettre a serifs -- pas une economie. A epaisseur egale (0.155 essaye
+# d'abord) les deux contre-formes se reduisaient a des fentes et le M se
+# lisait comme un bloc raye, y compris a 128 px.
+M_DIAG = 0.115          # epaisseur PERPENDICULAIRE des obliques du V
+# Plancher en PIXELS, pas en fraction, et il ne mord qu'en dessous de 19 px de
+# cote -- donc a 16 seulement parmi les tailles installees. A cette taille
+# 0.115 du cote ne fait que 1,8 px d'oblique : cairo la rend en deux colonnes a
+# moitie couvertes, le V devient gris et la lettre perd son milieu. 2,2 px
+# suffit a ce qu'une colonne soit pleine. Compare a l'oeil sur agrandissement
+# x10 contre 2.0, 2.5 et 2.8 : a 2,5 le V engraisse et ferme les contre-formes.
+M_DIAG_MIN = 2.2
+# 0.80 : le V descend bas SANS toucher la ligne de pied, il reste un cinquieme
+# de la hauteur sous sa pointe. A 0.74 le creux remontait si haut que le milieu
+# de la lettre devenait une masse pleine.
+M_TIP = 0.80            # profondeur de la pointe du V, en fraction de hauteur
+M_TIP_W = 0.10          # largeur du plat de la pointe
+
+
+def _m_path(cr, size):
+    """Pose le contour du M dans une boite size x size a l'origine, et rend
+    les deux ordonnees d'encre (haut, bas) dont le degrade a besoin.
+
+    UN SEUL chemin ferme, et non trois traits empiles : les jonctions entre les
+    futs et les obliques doivent etre franches. Deux formes qui se chevauchent
+    laissent une couture des qu'un degrade ou un contour passe dessus, et a
+    16 px cette couture fait un pixel entier.
+
+    RECALAGE SUR LA GRILLE : les quatre aretes verticales des futs et les deux
+    horizontales sont arrondies a l'entier. Cairo ne hinte rien, donc un fut de
+    3 px pose a x = 1.34 se rend en quatre colonnes grises -- le M devient flou
+    a la seule taille qui compte vraiment.
+    """
+    stem = max(2.0, float(round(M_STEM * size)))
+    x0 = float(round((size - M_WIDTH * size) / 2.0))
+    top = float(round((size - M_HEIGHT * size) / 2.0))
+    base = size - top
+    h = base - top
+
+    # Futs : bord exterieur sur x0 / x1, largeur entiere, donc les deux aretes
+    # de chaque fut tombent sur la grille.
+    l_out, l_in = x0, x0 + stem
+    r_out, r_in = size - x0, size - x0 - stem
+    cx = size / 2.0
+
+    flare = max(0.6, M_FLARE * size)
+    flare_h = max(1.0, M_FLARE_H * h)
+    tip_half = max(0.4, M_TIP_W * size / 2.0)
+    y_tip = top + M_TIP * h
+
+    # Oblique gauche : son bord GAUCHE va de (l_in, top) a (cx - tip_half,
+    # y_tip) -- il part donc de l'arete interne du fut, ce qui place le sommet
+    # de la contre-forme pile sur la ligne de tete.
+    #
+    # Son bord DROIT est ce meme bord decale PERPENDICULAIREMENT de M_DIAG puis
+    # recoupe a y = top, d'ou le dx = epaisseur / uy. C'est la seule facon
+    # d'obtenir une oblique d'epaisseur constante dont le sommet arrive lui
+    # aussi pile sur la ligne de tete : un simple decalage horizontal donnerait
+    # un trait qui maigrit avec la pente, et la pente change des qu'on touche a
+    # M_TIP.
+    dx_span = (cx - tip_half) - l_in
+    dy_span = y_tip - top
+    seg = math.hypot(dx_span, dy_span)
+    ux, uy = dx_span / seg, dy_span / seg
+    # Borne : passe cette epaisseur, le bord droit de l'oblique franchirait
+    # l'axe avant la ligne de tete, le creux du V remonterait AU-DESSUS du haut
+    # du glyphe et le contour se croiserait lui-meme. Meme precaution que le
+    # rayon borne de _rounded_path ou le nombre de dents de paint_knob : ca ne
+    # mord qu'a proportions absurdes, mais alors ca ne produit pas un monstre.
+    dx_top = min(max(M_DIAG_MIN, M_DIAG * size) / uy,
+                 dx_span - 0.10 * h * ux / uy)
+    y_notch = top + (cx - (l_in + dx_top)) * uy / ux
+
+    cr.new_path()
+    # Pied gauche, cote exterieur. Serif EVASE et non rectangulaire : les
+    # controles poses sur l'angle donnent une gorge concave, le raccord en
+    # trompette du pied d'un badge d'ampli. A 16 px il ne reste qu'un pixel
+    # d'evasement de chaque cote -- assez pour que le pied paraisse plus large
+    # que le fut, ce qui est tout ce qu'on lui demande a cette taille.
+    cr.move_to(l_out - flare, base)
+    cr.curve_to(l_out, base, l_out, base, l_out, base - flare_h)
+    cr.line_to(l_out, top)
+    cr.line_to(l_in + dx_top, top)          # haut du fut + de l'oblique
+    cr.line_to(cx, y_notch)                 # fond de l'encoche entre obliques
+    cr.line_to(r_in - dx_top, top)
+    cr.line_to(r_out, top)
+    cr.line_to(r_out, base - flare_h)
+    cr.curve_to(r_out, base, r_out, base, r_out + flare, base)
+    cr.line_to(r_in - flare, base)          # pied droit, cote interieur
+    cr.curve_to(r_in, base, r_in, base, r_in, base - flare_h)
+    cr.line_to(r_in, top)                   # sommet de la contre-forme droite
+    cr.line_to(cx + tip_half, y_tip)        # pointe du V
+    cr.line_to(cx - tip_half, y_tip)
+    cr.line_to(l_in, top)                   # sommet de la contre-forme gauche
+    cr.line_to(l_in, base - flare_h)
+    cr.curve_to(l_in, base, l_in, base, l_in + flare, base)
+    cr.close_path()
+    return top, base
+
+
+def paint_m(cr, size, actif=True):
+    """Le M dore, centre dans une boite size x size, sur fond TRANSPARENT.
+
+    Aucune plaque derriere le glyphe : la barre de GNOME est sombre, et un fond
+    opaque se lirait comme un autocollant colle sur la barre au lieu d'une
+    icone. C'est l'alpha qui porte la forme.
+    """
+    cr.save()
+    top, base = _m_path(cr, size)
+
+    # Contour sombre TRACE AVANT le remplissage, donc a moitie recouvert par
+    # lui : il ne deborde que vers l'exterieur et ne mange pas le fut, deja a
+    # 3 px a 16. Il n'est pas decoratif -- l'or est a environ 0.72 de luminance,
+    # donc sur une barre de theme CLAIR un M dore nu ne fait quasiment aucun
+    # contraste. Le lisere sombre est ce qui le tient sur les deux themes.
+    # PLAFONNE, et pas seulement proportionnel : a 0.055 du cote il faisait 7 px
+    # a 128, soit un cadre noir qui devenait la forme dominante de l'icone. Le
+    # lisere a un role de lisibilite, pas de dessin -- 1 px la ou il faut, et
+    # jamais plus de 2,6 quelle que soit la taille.
+    cr.set_source_rgba(0, 0, 0, 0.55)
+    cr.set_line_width(max(1.0, min(size * 0.055, 2.6)))
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)      # sinon les pointes fusent
+    cr.stroke_preserve()
+
+    # Degrade plus resserre que celui de paint_logo, et decale vers le clair :
+    # le lettrage de la toile est pose sur du tissu presque noir et peut se
+    # permettre de plonger a 0.65 en bas, mais ici les pieds tomberaient dans le
+    # noir de la barre et le M paraitrait coupe a mi-hauteur.
+    g = cairo.LinearGradient(0, top, 0, base)
+    for pos, rgb in ((0.00, (0.988, 0.941, 0.749)),
+                     (0.42, (0.898, 0.780, 0.376)),
+                     (1.00, (0.757, 0.612, 0.212))):
+        g.add_color_stop_rgb(pos, *rgb)
+    cr.set_source(g)
+
+    if actif:
+        cr.fill()
+    else:
+        cr.fill_preserve()
+        # Voile NEUTRE ET CLAIR, a l'inverse de celui de paint_knob. La molette
+        # est posee sur du laiton, un voile sombre l'y eteint ; le M est pose
+        # sur une barre presque noire, et un voile sombre l'y EFFACERAIT au lieu
+        # de le desactiver. On tire donc l'or vers un gris de clarte voisine :
+        # la forme reste entiere et lisible, c'est la couleur qui s'eteint --
+        # exactement ce que fait un theme d'icones pour un element inactif.
+        cr.set_source_rgba(0.612, 0.608, 0.596, 0.78)
+        cr.fill()
+    cr.restore()
+
+
+# Deux images possibles seulement, et _do_refresh de l'applet passe ici jusqu'a
+# huit fois par seconde tant qu'on tourne la molette physique de l'enceinte.
+# On garde donc les Pixbuf par (taille, etat) : un Pixbuf n'est jamais modifie
+# ici, donc le partager entre appels est sans risque.
+_ICON_CACHE = {}
+
+ICON_NAME = "marshall-applet"
+# Les tailles que reclame un theme hicolor. 16 et 24 servent la barre, les
+# grandes le lanceur d'applications et l'apercu d'Alt-Tab.
+ICON_THEME_SIZES = (16, 24, 32, 48, 64, 128)
+
+
+def icon_pixbuf(size, actif=True):
+    """Le M en GdkPixbuf, pret pour Gtk.StatusIcon.
+
+    Gdk.pixbuf_get_from_surface et NON une copie d'octets : l'ARGB32 de cairo
+    est pre-multiplie et range dans l'ordre de la machine -- donc BGRA en
+    petit-boutien -- la RGBA de GdkPixbuf ni l'un ni l'autre. Une copie naive
+    donne un M bleu, et c'est verifie dans les tests par la couleur du pixel et
+    non par la seule absence d'exception.
+    """
+    size = int(size)
+    cle = (size, bool(actif))
+    pixbuf = _ICON_CACHE.get(cle)
+    if pixbuf is None:
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+        paint_m(cairo.Context(surface), size, actif=actif)
+        surface.flush()
+        pixbuf = Gdk.pixbuf_get_from_surface(surface, 0, 0, size, size)
+        _ICON_CACHE[cle] = pixbuf
+    return pixbuf
+
+
+def install_icon_theme(base=None):
+    """Ecrit le M dans le theme d'icones hicolor, et rend les chemins ecrits.
+
+    Le Icon= d'un .desktop veut un nom de theme ou un chemin absolu. On pose
+    donc le nom `marshall-applet` dans le theme de l'utilisateur, ce qui laisse
+    GNOME choisir la taille selon l'endroit ou il affiche l'entree -- un chemin
+    absolu le figerait a une seule image.
+
+    Les PNG sont rendus PAR paint_m, et non depuis un SVG pose a cote : une
+    seule source pour le glyphe, sinon les deux divergent au premier
+    ajustement et personne ne s'en apercoit avant une capture d'ecran.
+
+    L'environnement est lu A L'APPEL et non a l'import, comme autostart_path()
+    dans marshall-applet : les tests pointent XDG_DATA_HOME sur un repertoire
+    temporaire, et le vrai theme de l'utilisateur ne doit pas etre touche.
+    """
+    if base is None:
+        base = os.environ.get("XDG_DATA_HOME",
+                              os.path.expanduser("~/.local/share"))
+    ecrits = []
+    for taille in ICON_THEME_SIZES:
+        dossier = os.path.join(base, "icons", "hicolor",
+                               f"{taille}x{taille}", "apps")
+        os.makedirs(dossier, exist_ok=True)
+        chemin = os.path.join(dossier, f"{ICON_NAME}.png")
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, taille, taille)
+        paint_m(cairo.Context(surface), taille)
+        surface.write_to_png(chemin)         # ecrase : reinstaller est normal
+        ecrits.append(chemin)
+    return ecrits
 
 
 def paint_knob(cr, cx, cy, radius, fraction, actif=True):

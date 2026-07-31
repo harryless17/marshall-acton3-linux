@@ -391,7 +391,7 @@ class FausseIcone:
         if not v:
             self.journal.append("icone_masquee")
 
-    def set_from_icon_name(self, _n):
+    def set_from_pixbuf(self, _p):
         pass
 
     def set_tooltip_text(self, _t):
